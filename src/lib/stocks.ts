@@ -33,6 +33,7 @@
 import { httpFetch as fetch } from "./httpFetch";
 import { apiRequest } from "./api";
 import { isTauri } from "./platform";
+import { scopedCacheKey } from "./settings";
 import type { StockSymbol } from "./settings";
 
 export type { StockSymbol };
@@ -152,7 +153,7 @@ function isCurrentShape(entry: unknown): entry is CacheEntry {
 
 function readCache(): Record<string, CacheEntry> {
   try {
-    const raw = JSON.parse(localStorage.getItem(CACHE_KEY) || "null");
+    const raw = JSON.parse(localStorage.getItem(scopedCacheKey(CACHE_KEY)) || "null");
     if (!raw || typeof raw !== "object") return {};
     const out: Record<string, CacheEntry> = {};
     for (const [k, v] of Object.entries(raw)) if (isCurrentShape(v)) out[k] = v;
@@ -170,7 +171,7 @@ function writeCache(symbol: string, data: Quote): void {
     // list stops being asked for, and its entry ages out on the next write.
     const keys = Object.keys(cache);
     for (const k of keys.slice(0, Math.max(0, keys.length - MAX_WATCHLIST * 2))) delete cache[k];
-    localStorage.setItem(CACHE_KEY, JSON.stringify(cache));
+    localStorage.setItem(scopedCacheKey(CACHE_KEY), JSON.stringify(cache));
   } catch {
     /* the cache is an optimisation, never a failure */
   }

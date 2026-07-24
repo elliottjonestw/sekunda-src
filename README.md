@@ -148,7 +148,12 @@ and never travel in a backup file. They are split by what the setting *is*:
 - **Per-device, in the webview's `localStorage`** — your model choice, your
   voice and speech settings, your calendar-account configuration, the UI
   language, the theme, and your Today card layout. These are answers about a
-  particular machine, and you re-enter them once per machine.
+  particular machine, and you re-enter them once per machine. The short-lived
+  Today caches (weather, stock quotes, RSS headlines, the AI day summary) are
+  also `localStorage`, but **scoped per signed-in account and cleared on sign
+  out**: they describe one account's data (the RSS list is yours, the briefing
+  is built from your day), so on a shared device they must not survive the
+  session the way the machine-level settings above do.
 - **The two credentials, on their own** — your OpenAI API key and your iCloud
   app-specific password. Also `localStorage`, also per-device, also **never sent
   to the server**, but deliberately kept out of the settings objects entirely

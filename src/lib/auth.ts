@@ -9,6 +9,7 @@ import { apiRequest, ApiError } from "./api";
 import { clearCache } from "./cache";
 import { clearMailCache } from "./mail/cache";
 import { clearSecrets } from "./secrets";
+import { clearScopedCaches } from "./settings";
 import { DEFAULT_KDF_PARAMS, deriveKey, newKdfSalt } from "./kdf";
 import {
   clearAuth,
@@ -194,6 +195,7 @@ export async function deleteAccount(email: string, password: string): Promise<vo
   // Before clearAuth — see the note in logout().
   clearSecrets();
   clearMailCache();
+  clearScopedCaches();
   // The session is gone server-side; clear this device so nothing tries to use
   // a refresh token that now names a user who doesn't exist.
   clearAuth();
@@ -234,6 +236,12 @@ export async function logout(): Promise<void> {
   // explicitly, or a stranger's inbox stays readable to the next person to sign
   // in on this device without a reload.
   clearMailCache();
+  // The short-lived Today caches (weather/RSS/stocks/AI summary) are scoped to
+  // this account now, so they have to be wiped before the session goes — same
+  // reason as clearSecrets above. Without it the RSS list and the day summary,
+  // which describe this account's data, survive the sign-out for the next
+  // person to read off the shared device.
+  clearScopedCaches();
   clearAuth();
   // The response cache persists in IndexedDB across the reload sign-out
   // triggers, so it must be wiped explicitly — otherwise one account's cached

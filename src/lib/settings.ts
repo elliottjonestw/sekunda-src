@@ -308,6 +308,45 @@ export function scopedKey(base: string): string {
   return key;
 }
 
+/**
+ * The short-lived, per-device caches that hold live third-party data (weather,
+ * RSS, stock quotes, the AI day summary). None of it is credentials and none of
+ * it is the user's own rows — but the RSS list and the day summary still
+ * *describe* one account's data, so on a shared device they must not follow the
+ * account out of the session the way the four caches once did: they were left
+ * under bare keys when settings and secrets moved to `scopedKey`, so signing
+ * out left the next person to sign in reading the previous user's feeds and
+ * schedule-derived briefing.
+ *
+ * Each entry is a *base* key the cache module owns (versioned, so a shape
+ * change still retires what earlier builds wrote). `scopedCacheKey` routes one
+ * through `scopedKey` so it lands in this account's bucket; `clearScopedCaches`
+ * wipes every registered key and is called from `logout`/`deleteAccount` before
+ * `clearAuth`, for the same reason `clearSecrets` is: once the session is gone
+ * `scopedKey` resolves to the `anon` bucket and a wipe would hit nothing.
+ *
+ * A new short-lived cache registers here rather than adding a second clear call
+ * to the auth paths — that is the point of the list, because "remember to clear
+ * it on sign-out" is exactly what the four below forgot to do.
+ */
+const SCOPED_CACHE_BASES = [
+  "secondbrain.weather.v2",
+  "secondbrain.rss.v1",
+  "secondbrain.stocks.v1",
+  "secondbrain.daySummary.v2",
+];
+
+/** The per-account storage key for a registered short-lived cache. */
+export function scopedCacheKey(base: string): string {
+  return scopedKey(base);
+}
+
+/** Wipe every registered short-lived cache for the currently-signed-in account.
+ *  MUST run before `clearAuth` — see the note on the list above. */
+export function clearScopedCaches(): void {
+  for (const base of SCOPED_CACHE_BASES) localStorage.removeItem(scopedKey(base));
+}
+
 const DEFAULTS: AppSettings = {
   openaiModel: "gpt-5-nano",
   sttModel: "whisper-1",

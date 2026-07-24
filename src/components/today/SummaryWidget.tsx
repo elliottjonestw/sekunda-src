@@ -19,7 +19,7 @@ import { dueTodosFor, dueRemindersFor, reminderWhen, upcomingBirthdays } from ".
 import type { TodayWidget, TodayWidgetProps } from "./types";
 import { summarizeDay, hasDayContent, type DaySummaryInput } from "../../lib/ai";
 import { englishCondition, isForecastable } from "../../lib/weather";
-import { summaryMaxAgeMs } from "../../lib/settings";
+import { summaryMaxAgeMs, scopedCacheKey } from "../../lib/settings";
 import { isAssistantConfigured } from "../../lib/secrets";
 import { currentLanguage } from "../../lib/i18n";
 import { isOverdue, ageFromBirthday, toDateInput } from "../../lib/format";
@@ -63,7 +63,7 @@ function isEntry(v: unknown): v is SummaryEntry {
 
 function readCache(): SummaryCache {
   try {
-    const raw = JSON.parse(localStorage.getItem(CACHE_KEY) || "null");
+    const raw = JSON.parse(localStorage.getItem(scopedCacheKey(CACHE_KEY)) || "null");
     if (!raw || typeof raw !== "object") return {};
     // Drop anything an older/newer shape wrote, same as the weather cache.
     return Object.fromEntries(Object.entries(raw).filter(([, v]) => isEntry(v))) as SummaryCache;
@@ -81,7 +81,7 @@ function writeCache(dayKey: string, entry: SummaryEntry): void {
     cache[dayKey] = entry;
     const keys = Object.keys(cache);
     for (const k of keys.slice(0, Math.max(0, keys.length - CACHE_MAX))) delete cache[k];
-    localStorage.setItem(CACHE_KEY, JSON.stringify(cache));
+    localStorage.setItem(scopedCacheKey(CACHE_KEY), JSON.stringify(cache));
   } catch {
     /* the cache is an optimisation, never a failure */
   }

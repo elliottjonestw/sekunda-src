@@ -16,6 +16,7 @@
 // capabilities/default.json.
 
 import { httpFetch as fetch } from "./httpFetch";
+import { scopedCacheKey } from "./settings";
 import type { TemperatureUnit, WeatherLocation } from "./settings";
 
 const FORECAST_URL = "https://api.open-meteo.com/v1/forecast";
@@ -174,7 +175,7 @@ function isCurrentShape(entry: unknown): entry is CacheEntry {
 
 function readCache(): Record<string, CacheEntry> {
   try {
-    const raw = JSON.parse(localStorage.getItem(CACHE_KEY) || "null");
+    const raw = JSON.parse(localStorage.getItem(scopedCacheKey(CACHE_KEY)) || "null");
     if (!raw || typeof raw !== "object") return {};
     const out: Record<string, CacheEntry> = {};
     for (const [k, v] of Object.entries(raw)) if (isCurrentShape(v)) out[k] = v;
@@ -191,7 +192,7 @@ function writeCache(key: string, data: DayWeather): void {
     cache[key] = { at: Date.now(), data };
     const keys = Object.keys(cache);
     for (const k of keys.slice(0, Math.max(0, keys.length - CACHE_MAX))) delete cache[k];
-    localStorage.setItem(CACHE_KEY, JSON.stringify(cache));
+    localStorage.setItem(scopedCacheKey(CACHE_KEY), JSON.stringify(cache));
   } catch {
     /* the cache is an optimisation, never a failure */
   }

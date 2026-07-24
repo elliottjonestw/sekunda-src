@@ -23,6 +23,7 @@
 // because that's the user's own configuration and it should follow them.
 
 import { apiRequest } from "./api";
+import { scopedCacheKey } from "./settings";
 
 /** One article. Everything the card renders, and nothing else. */
 export interface FeedItem {
@@ -76,7 +77,7 @@ function isCurrentShape(entry: unknown): entry is { at: number; data: { title: s
 
 function readCache(): Record<string, CacheEntry> {
   try {
-    const raw = JSON.parse(localStorage.getItem(CACHE_KEY) || "null");
+    const raw = JSON.parse(localStorage.getItem(scopedCacheKey(CACHE_KEY)) || "null");
     if (!raw || typeof raw !== "object") return {};
     const out: Record<string, CacheEntry> = {};
     for (const [url, entry] of Object.entries(raw)) {
@@ -105,7 +106,7 @@ function writeCache(url: string, data: Feed): void {
     // stops being asked for, and its entry goes on the next write.
     const urls = Object.keys(cache);
     for (const u of urls.slice(0, Math.max(0, urls.length - 20))) delete cache[u];
-    localStorage.setItem(CACHE_KEY, JSON.stringify(cache));
+    localStorage.setItem(scopedCacheKey(CACHE_KEY), JSON.stringify(cache));
   } catch {
     /* the cache is an optimisation, never a failure */
   }
@@ -116,7 +117,7 @@ export function invalidateFeed(url: string): void {
   try {
     const cache = readCache();
     delete cache[url];
-    localStorage.setItem(CACHE_KEY, JSON.stringify(cache));
+    localStorage.setItem(scopedCacheKey(CACHE_KEY), JSON.stringify(cache));
   } catch {
     /* nothing to do — a stale entry ages out on its own */
   }
