@@ -3,6 +3,16 @@
 Closes every item in [`mail-known-issues.md`](mail-known-issues.md). Seven
 phases, each one shippable on its own and leaving the app working.
 
+> **Status: phases 1–4 and 7 shipped. Phases 5 and 6 were skipped by decision**,
+> after testing in production. So this document is history rather than a
+> worklist, and it is **not** the record of what happened —
+> [`mail-known-issues.md`](mail-known-issues.md) is, including what skipping 5
+> and 6 left open. Read that first.
+>
+> The one thing to carry forward: phase 5's gate asked for a *measurement* of
+> ops per minute, and none was taken. Phase 6's corpus of real mail was never
+> built, so every automated test here still runs on constructed fixtures.
+
 ## Decisions this plan is built on
 
 Taken deliberately; the rest of the plan follows from them.

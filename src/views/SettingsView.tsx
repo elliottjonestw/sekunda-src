@@ -1594,6 +1594,15 @@ function MailSettingsPane() {
         <Notice tone="info">
           {isTauri() ? t("settings.mail.directNote") : t("settings.mail.relayNote")}
         </Notice>
+        {/* The other place mail goes, and the one nobody would guess: the
+            assistant is an OpenAI model, so anything it reads on your behalf is
+            sent there. Stated precisely rather than as a warning — "some data
+            may be shared" is the kind of sentence people learn to skip, and the
+            precision is what makes it worth reading. The distinction that
+            matters is that a search sends no message text at all. */}
+        <p className="mt-3 text-xs leading-relaxed text-neutral-400">
+          {t("settings.mail.assistantNote")}
+        </p>
         {connected && account.folders.length > 0 && (
           <p className="mt-3 text-xs text-neutral-400">
             {t("settings.mail.mailboxes", { list: account.folders.map((f) => f.label ?? f.name).join(", ") })}

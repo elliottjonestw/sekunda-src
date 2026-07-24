@@ -305,6 +305,7 @@
       "readOnlyHint": "Mailboxes are opened read-only, so nothing here can send, delete or change a message — not even by mistake. Messages are read live when you ask the assistant about them.",
       "directNote": "On the desktop app, mail is fetched straight from Apple. It never passes through Sekunda's servers.",
       "relayNote": "In the browser, mail cannot be fetched directly, so it is relayed through Sekunda's server — which means your app-specific password and the messages you read pass through it. Nothing is stored or logged. Use the desktop app to avoid this entirely.",
+      "assistantNote": "If you ask the assistant about your mail, what it reads is sent to OpenAI: a search sends subjects, senders and dates — never message text — and opening a message sends that message's text, for that question only.",
       "mailboxes": "Mailboxes: {{list}}"
     },
     "data": {

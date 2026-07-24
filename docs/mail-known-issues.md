@@ -1,244 +1,262 @@
-# iCloud Mail — known issues
+# iCloud Mail — known issues, and what became of them
 
-Everything wrong with, or missing from, the mail feature as it stands, gathered
-from use and from reading the code back. Ordered by section; severity is a
-judgement about *user impact*, not effort.
+Originally the list of everything wrong with or missing from the mail feature.
+It is now **the record**: every item carries its outcome, and the ones still
+open say why they are open rather than quietly disappearing.
 
-Nothing here is a reason the feature doesn't work — it does. This is the list of
-what to fix next and what to say out loud in the meantime.
+Worked through in [`mail-improvement-plan.md`](mail-improvement-plan.md).
+Phases 1–4 and 7 shipped. **Phases 5 and 6 were skipped** — see
+[Where it stopped](#where-it-stopped), which is the most important part of this
+document, because it is the part a reader would otherwise have to infer.
 
-Legend: **Bug** = it does the wrong thing. **Gap** = it doesn't do the thing.
-**Accepted** = deliberate, documented, and still true — listed so it isn't
-rediscovered as a surprise.
+Legend: **FIXED** — done, with the phase. **ACCEPTED** — deliberate, documented,
+still true. **OPEN** — still wrong, and nothing is scheduled.
 
 ---
 
 ## 1. Correctness
 
-### 1.1 `UIDVALIDITY` is never checked — Bug, high
-A uid identifies a message only for as long as the mailbox's `UIDVALIDITY`
-stays the same. Apple bumps it when a mailbox is recreated or restored, and
-every uid then points at a *different message*.
+### 1.1 `UIDVALIDITY` is never checked — FIXED (phase 3a)
+Both executors discarded the `* OK [UIDVALIDITY n]` that `EXAMINE` already
+sends. It now rides on every op that opens a mailbox, `STATUS` asks for it too,
+and it is part of every cache key — a change drops everything remembered about
+that mailbox.
 
-Today the exposure is one page visit, because nothing is persisted. **It becomes
-serious the moment anything is cached** (§2.2): a stale uid would open somebody
-else's message under the subject line you clicked. `EXAMINE` already returns
-`* OK [UIDVALIDITY n]` and `worker/src/imap.ts` discards it.
+Landed **before** the cache rather than with it, deliberately: a uid names a
+message only while that number holds, so a cache keyed without it would serve
+the wrong email under the subject that was clicked.
 
-*Fix:* return it from both executors, and make it part of every cache key. Do
-this **before** writing a cache, not after.
+### 1.2 A truncated fetch can lose the body entirely — FIXED (phase 1)
+`BODYSTRUCTURE` is now read first — the server's own parse of the MIME tree,
+costing no body bytes and riding the connection that is already open. Messages
+at or under `MAIL_SMALL_MESSAGE_BYTES` (64 KB) still take the whole-message path
+and the original, well-tested walker; larger ones fetch only the text part the
+structure names.
 
-### 1.2 A truncated fetch can lose the body entirely — Bug, high
-`getMessage` fetches `BODY.PEEK[]<0.262144>` — the first 256 KB of the **whole
-raw message**, attachments included and base64-inflated. If a large image or
-attachment part sits *before* the text part in the MIME structure, the text is
-past the cut and the reader shows an empty or garbled body rather than a
-shortened one.
+Keeping the small path is the risk control: the common case never touches the
+newer code. A structure we cannot read falls back to it too.
 
-Same root cause as §2.3, and the same fix solves both.
+### 1.3 Messages sort by uid, not by date — FIXED (phase 2)
+Sorted client-side in `searchMail` by the resolved date. Uid order is arrival
+order *in that mailbox*, which is wrong for anything filed, moved or imported.
 
-*Fix:* `BODYSTRUCTURE` first, then fetch only the text part by its part number.
+### 1.4 Mailbox names are not decoded from modified UTF-7 — FIXED (phase 2)
+`decodeMailboxName` in `mime.ts`, for display only. `MailFolder.name` stays
+exactly what the server said, because that is what every later command carries;
+`label` is the readable one. `list_mailboxes` returns both and the tool
+description says which is which.
 
-### 1.3 Messages sort by uid, not by date — Bug, medium
-`worker/src/imap.ts` and `mail.rs` both sort by uid descending, and uid order is
-*arrival order in that mailbox*. Anything moved, filed, imported or restored
-sorts by when it was filed rather than when it was sent. INBOX usually agrees;
-Archive frequently doesn't.
+### 1.5 Attached emails are opaque — FIXED (phase 1)
+The structure walker recurses into `message/rfc822` and marks everything inside
+it `embedded`. The attached message is still listed as an attachment; its text
+is the *fallback* body, never preferred over the message's own.
 
-*Fix:* sort by the resolved date client-side in `searchMail`, which already has
-both the `Date` header and `INTERNALDATE`.
+### 1.6 `multipart/alternative` takes the first part that yields text — FIXED (phase 1)
+`chooseTextPart` picks by type: plain, then HTML, then the same two inside an
+attached message. Position is not consulted.
 
-### 1.4 Mailbox names are not decoded from modified UTF-7 — Bug, medium
-IMAP encodes non-ASCII mailbox names in modified UTF-7 (RFC 3501 §5.1.3), so a
-folder called `受信箱` arrives as `&ZeVnLIqe-` and is displayed verbatim in the
-picker and in Settings. Nothing decodes it.
+### 1.7 RFC 2231 filename continuations unhandled — **OPEN**
+`filename*0=`/`filename*1=` still parse as a truncated name. Was scheduled for
+phase 6, alongside the corpus that would have proven it.
 
-Round-tripping is unaffected — we send back exactly what the server gave us — so
-this is cosmetic, but it is very visible to anyone with non-English folders.
+**It costs more than it did.** The original note said the name was display-only
+because nothing could be downloaded — that is no longer true (§4), so a long or
+non-ASCII attachment name now produces a wrong *saved filename*, not merely a
+wrong label. Noted in `parseContentType`.
 
-*Fix:* decode for display only, in `mime.ts`; keep the raw name as the value.
+### 1.8 Attachment sizes are the encoded length — FIXED (phase 1)
+Sizes come from `BODYSTRUCTURE`, which is the server's own count. The old figure
+was whatever survived truncation — wrong precisely when the attachment was large
+enough to care about.
 
-### 1.5 Attached emails are opaque — Bug, low
-`walkPart` treats `message/rfc822` as an attachment rather than recursing into
-it, so a forwarded message's text is lost. "What did the forwarded mail say?"
-returns nothing.
+Still the *encoded* size, which is what the server reports and what `size` is
+documented to mean; base64 reads about a third above the saved file.
 
-### 1.6 `multipart/alternative` takes the first part that yields text — Bug, low
-Well-formed senders put `text/plain` first, so this is right in practice. A
-sender who puts HTML first gets the HTML-converted text even when a plain part
-exists. Prefer by content type rather than by position.
+### 1.9 `\Deleted` messages still appear — FIXED (phase 2)
+`UNDELETED` leads every search. It also makes the key list never empty, so the
+old `ALL` fallback has nothing left to guard.
 
-### 1.7 RFC 2231 filename continuations unhandled — Bug, low
-`filename*0=`/`filename*1=` (very long attachment names) parse as a truncated
-name. Documented in `mime.ts`. The name is display-only — nothing can be
-downloaded — so the cost is cosmetic.
-
-### 1.8 Attachment sizes are the encoded length — Bug, low
-Reported size is the length of the encoded part, so base64 attachments read
-about 33% larger than the real file.
-
-### 1.9 `\Deleted` messages still appear — Bug, low
-Messages flagged deleted but not yet expunged are listed like any other.
-
-### 1.10 The displayed date is sender-controlled — Bug, low
-`parseMailDate` prefers the message's own `Date` header and falls back to
-`INTERNALDATE`. A message with a wrong or forged `Date` displays that date.
-Preferring `INTERNALDATE` (what the server saw) would be more truthful.
+### 1.10 The displayed date is sender-controlled — FIXED (phase 2)
+The `Date` header is still preferred, because it is what every mail client shows
+and what the sender meant — but only while it is *plausible* (under a day in the
+future, after 1990). Outside that, `INTERNALDATE` wins. Not a spam filter; a
+refusal to let a sender pin itself to the top of a date-sorted list.
 
 ---
 
 ## 2. Performance and scale
 
-### 2.1 Only the newest 50, with no way back — Gap, high
-`UID SEARCH` returns *every* matching uid and we keep the last 50, discarding
-the rest. There is no "load more", so older mail is unreachable from the UI
-however much of it matched.
+### 2.1 Only the newest 50, with no way back — FIXED (phase 2)
+`search` returns every matching uid (capped at `MAIL_MAX_UIDS` = 5,000) and a
+page is a `headers` op over a slice of it. An explicit **Load older** button, not
+infinite scroll: each page is a login and a round-trip to Apple, and a scroll
+position should not be able to spend one by accident.
 
-*Fix:* keep the uid list and page through it. Cheap — the expensive call
-(`UID FETCH`) is already batched, and the uid list is just integers.
+Paging over a *snapshot* is safe against mail arriving mid-session as a property
+of uids rather than luck — uids ascend with arrival, so a new message is always
+above the window being paged.
 
-### 2.2 Everything re-downloads on every visit — Gap, high
-Nothing is cached anywhere. `App` renders `{view === "mail" && <MailView />}`,
-so navigating away unmounts the view and discards both the list and any opened
-messages. Returning to Mail is a fresh TLS handshake, `LOGIN`, `EXAMINE`,
-`UID SEARCH`, `UID FETCH`, `LOGOUT`.
+### 2.2 Everything re-downloads on every visit — FIXED (phase 3b)
+`src/lib/mail/cache.ts`, in memory only. Search results validated by the
+`STATUS` check rather than a TTL; message bodies need no revalidation at all,
+being immutable content. Cleared on sign-out, account deletion, disconnect and
+connect.
 
-Options, in increasing order of commitment:
-- **In-memory, app-scoped.** Survives navigation, dies with the app. No stated
-  privacy property changes. Cheap.
-- **On-disk with background backfill.** Genuinely better for a large mailbox,
-  but it means the app *stores your email* — see §3.1, which is a decision
-  rather than an implementation detail.
+### 2.3 An attachment is downloaded to be thrown away — FIXED (phase 1)
+Same `BODYSTRUCTURE` change as §1.2. Attachments are described — name, type,
+true size — without a byte of them crossing the wire until asked for.
 
-Either way, key on `UIDVALIDITY` (§1.1).
+### 2.4 A fresh TLS handshake and `LOGIN` per operation — **OPEN, accepted for now**
+Still one connect → login → command → logout per op. Phase 5 would have added
+connection reuse on desktop and a batch op on web, **gated on measuring ops per
+minute during ordinary use**.
 
-### 2.3 An attachment is downloaded to be thrown away — Bug, high
-Opening a message with a 10 MB PDF pulls 256 KB of base64 to display a
-two-line email, then discards the attachment parts client-side. Slow on every
-platform, and on web it is 256 KB through the Worker as well.
+That measurement was never taken. The gate was closed on two weaker grounds: use
+in production without trouble, and a count from the code — opening the page is
+2 ops, a message is 1, a refocus with nothing new is 1, so reading five messages
+is about 7 and a busy minute lands near 16, against a `MAIL_LIMIT` of 30/60s.
+Phase 3's cache removes most repeat ops, which was the plan's own reason for
+expecting the gate to close.
 
-*Fix:* the same `BODYSTRUCTURE` part-fetch as §1.2.
+**What that does not cover:** `MAIL_LIMIT` is web-only and per-colo; the desktop
+path talks to Apple directly with no cap of ours, so Apple's authentication
+throttling is the only bound there and no figure for it is known. If
+`[AUTHENTICATIONFAILED]` ever appears on a working password, this is the first
+thing to suspect.
 
-### 2.4 A fresh TLS handshake and `LOGIN` per operation — Gap, medium
-Every op is connect → login → one command → logout. Reading five messages is
-five logins. **Apple throttles repeated IMAP authentication**, so an active
-session could plausibly trip it, and it would surface as
-`[AUTHENTICATIONFAILED]` — indistinguishable from a wrong password (§3.3).
+### 2.5 The web relay's rate limit is reachable by a person — **OPEN**
+`MAIL_LIMIT` is unchanged at 30/min. Phase 3's cache made it materially harder
+to reach — a re-read costs nothing now — but the number was never revisited,
+because that was to happen in the same change as §2.4.
 
-Desktop could hold a connection open in Rust. The Worker structurally cannot
-without Durable Objects, which this project deliberately doesn't use.
+### 2.6 The assistant caches nothing — FIXED (phase 3b)
+The cache sits behind `mailbox.ts` rather than inside `MailView`, so
+`search_mail` and `get_message` get it too. That placement was the point.
 
-### 2.5 The web relay's rate limit is reachable by a person — Gap, low
-`MAIL_LIMIT` is 30/min per user and one op is one message opened. A brisk few
-minutes of reading could hit it. Raising it trades against §2.4.
+### 2.7 Large mailboxes vs. the 20-second deadline — **OPEN, partly moved**
+Still 20 s for every op except attachment download, which was raised to 60 s in
+phase 4 — that one is bounded by bytes rather than latency, and a working
+download reporting "the mail server took too long" is the worst of both.
 
-### 2.6 The assistant caches nothing — Gap, low
-Every `search_mail` and `get_message` is its own connection. A question that
-searches and opens two messages is three round-trips to Apple.
-
-### 2.7 Large mailboxes vs. the 20-second deadline — Gap, low
-Both executors give the whole conversation 20s. A very large `UID SEARCH` could
-exceed it and surface as "the mail server took too long". Untested at scale.
+A very large `UID SEARCH` against the 20 s deadline remains untested at scale.
 
 ---
 
 ## 3. Privacy and security
 
-### 3.1 A disk cache would reverse a stated promise — Decision, high
-"Nothing is stored" is currently a *claim we make to the user*: in the README,
-in CLAUDE.md, and in the Settings pane beside the relay warning. Any on-disk
-cache (§2.2) makes that false, and browser storage is plaintext on the origin —
-the same place the CSP note says an XSS can read.
+### 3.1 A disk cache would reverse a stated promise — ACCEPTED, and the promise holds
+Answered by declining the disk cache. The cache built in phase 3 is in memory:
+it dies with the app process and touches no storage, so "nothing is stored"
+stays literally true and needed no rewrite of the README, CLAUDE.md or the
+Settings copy, and no "clear cached mail" control.
 
-If we cache to disk, the honest version ships **with** the Settings copy
-rewritten and a "clear cached mail" control, in the same change.
+Revisit only with real numbers. An on-disk cache turns a promise about there
+being nothing to retain into a promise about a *retention policy*, which is a
+bigger decision than a performance fix.
 
-### 3.2 Mail read by the assistant goes to OpenAI — Accepted, medium
-Scoped more tightly than it first appears, and worth stating precisely:
-- `search_mail` sends **no bodies** — subject, sender, date, read state only.
-- `get_message` sends **one message's text**, up to 20,000 characters, in full
-  (not just the matching part), for messages the model chose to open.
-- Tool results live in a single turn's `messages` array and are **not** re-sent
-  on later turns. An email read three questions ago is not still travelling.
-- But: what the model *quotes in its reply* is in the history and does persist;
-  the model's choice of what to open is judgement, not a filter, and the loop
-  allows up to 8 rounds; and 50 subject lines and sender addresses per search is
-  itself a description of who is emailing you.
+### 3.2 Mail read by the assistant goes to OpenAI — ACCEPTED, and now SAID (phase 7)
+Unchanged in substance, and the substance is narrower than it sounds: a search
+sends subjects, senders and dates and no message text; opening a message sends
+that message's text for that one question; tool results are not re-sent on later
+turns, though what the model quotes back persists in the conversation.
 
-Inherent to the feature. Not currently said anywhere in the UI — one line under
-the connect button would cover it.
+The gap was that none of it was stated in the UI. There is now a line in
+Settings → Mail, and a paragraph in the README. Written precisely rather than as
+a warning — "some data may be shared" is the kind of sentence people learn to
+skip.
 
 ### 3.3 Web sign-in failed with `[AUTHENTICATIONFAILED]` — CLOSED, not a bug
-The Worker had not been deployed with the current code. Web mail works. Kept
-here because the failure mode is worth recognising: Apple's response is the same
-for a wrong password and for a relay problem, so "check your credentials" is not
-a safe conclusion to draw from it.
+The Worker had not been deployed with the current code. Kept because the failure
+mode is worth recognising: Apple answers the same way for a wrong password and
+for a relay problem, so "check your credentials" is not a safe conclusion.
 
-### 3.4 The web relay sees the password and the mail — Accepted, high
+### 3.4 The web relay sees the password and the mail — ACCEPTED, unchanged
 TLS terminates at the Worker. Nothing stored, nothing logged, session required,
 iCloud-only, rate-limited. Documented at length in `worker/src/routes/mail.ts`
 and stated in the Settings pane. Unavoidable for any browser client; desktop is
 unaffected.
 
-### 3.5 The credential is plaintext in `localStorage` — Accepted, medium
+### 3.5 The credential is plaintext in `localStorage` — ACCEPTED, unchanged
 Same as the CalDAV password. `secrets.ts` narrows the surface and shortens the
-lifetime; it is not encryption. The real fix is an OS keychain on desktop.
+lifetime; it is not encryption. The real fix is an OS keychain on desktop, which
+is its own project.
 
 ---
 
 ## 4. Functional gaps
 
-None of these are broken — they were never built.
-
-- **No pagination controls** (§2.1) and no unified/all-mailbox search: the box
-  searches only the selected mailbox.
-- **No unread counts** on mailboxes, no badge anywhere.
-- **No threading** — a conversation is N separate rows.
-- **No attachment download** and **no inline images**; attachments are listed
-  only. Deliberate: there is no fetch-a-part path at all.
-- **Nothing offline.** Mail is live-only, so an offline app has no mail
-  whatsoever — unlike every other domain, which falls back to a cache.
-- **Read state diverges.** Reading in Sekunda cannot mark a message read (the
-  connection is read-only by design), so Apple Mail still shows it unread. Arguably
-  correct, definitely surprising.
-- **iCloud's `TEXT` search may not index bodies.** Unverified. If it matches
-  headers only, the search box is quietly weaker than it looks and the tool
-  description's hedge is doing real work.
-- **New server-side mailboxes don't appear** until Settings → Reconnect; the
-  folder list is cached at connect time.
-- **The "Read-only" marker is hidden below `md`** — trivial, but the one place
-  the UI explains why there are no buttons.
+- **No pagination controls** — FIXED (phase 2).
+- **No attachment download** — FIXED (phase 4). One at a time, on click, capped
+  at 10 MB, and it **refuses rather than truncates**: a file cut short is a
+  corrupted file that looks like a saved one. The assistant deliberately gets no
+  attachment tool.
+- **New server-side mailboxes don't appear** — FIXED (phase 2): re-`LIST` on
+  mount, still cached in settings so the picker renders before the network
+  answers.
+- **The "Read-only" marker is hidden below `md`** — FIXED (phase 2). It was
+  hidden exactly where it is needed most.
+- **No threading**, **no unread counts**, **no unified search**, **nothing
+  offline**, **read state diverges from Apple Mail** — ACCEPTED, and now
+  **declared in the README** rather than left to be rediscovered. Each has a
+  reason there; the last is the accepted cost of the read-only decision.
+- **No inline images** — still true. Message bodies render as plain text and
+  widening that is not a rendering choice but a security one.
+- **iCloud's `TEXT` search may not index bodies** — **OPEN, still unverified.**
+  Phase 6 was to answer this. If it matches headers only, the search box is
+  quietly weaker than it looks and the tool description's hedge is doing real
+  work.
 
 ---
 
 ## 5. Process and verification
 
-### 5.1 The fake IMAP server is more permissive than Apple — Process, medium
-The scripted-server suite passed the trailing-space bug that made *every*
-filtered search fail against iCloud. A harness written alongside the client
-shares its assumptions. It proves framing and sequencing; it does not prove
-protocol conformance.
+All three were phase 6. **None of them was done.**
 
-### 5.2 `get_message` is unverified on complex real mail — Process, medium
-The MIME parser is tested against constructed messages. Real-world mail —
-nested multiparts, `multipart/related` with inline images, Outlook's
-`text/calendar` parts, unusual charsets — has not been through it.
+### 5.1 The fake IMAP server is more permissive than Apple — **OPEN**
+Unchanged. The harness still shares the client's assumptions, and it is the
+thing that passed the trailing-space bug which made every filtered search fail
+against iCloud.
 
-### 5.3 Assistant routing is empirical — Process, low
-The `search_people`-instead-of-`search_mail` misrouting was fixed with prompt
-wording. Prompt fixes cannot be proven, only observed. If it recurs, the next
-levers are renaming `search_mail` to something unconfusable, or making
-`search_people` state that it is not email.
+What *was* added is narrower and worth knowing about: unit tests for the pure
+parsing layer, run by `npm test` — `worker/test/` for `BODYSTRUCTURE`, `STATUS`,
+`EXAMINE`, part numbers and the op envelope, and `test/` for the client's MIME
+decoding and the cache. They cover the twice-written parsers on both sides, and
+they found two real bugs while being written. They are not a conformance test.
+
+### 5.2 `get_message` is unverified on complex real mail — **OPEN, partly answered by use**
+No corpus was built. Nothing in phases 1–4 was developed against a real mailbox;
+every fixture in the test suite is constructed.
+
+The author reports testing in production and finding it works, which is real
+evidence and is why the corpus was skipped — but it is *use*, not coverage. The
+cases the corpus existed to find are the ones that do not appear in a normal
+inbox on a normal day: `multipart/related` with inline images, Outlook's
+`text/calendar` parts, deeply nested forwards, unusual charsets. If a message
+ever opens blank or garbled, this is the reason there is no test that would have
+caught it, and `e2e/fixtures/mail/` is the thing to build.
+
+### 5.3 Assistant routing is empirical — **OPEN by nature**
+Unchanged, and unchangeable: prompt fixes can be observed, not proven. If
+`search_people` wins again, the levers are renaming `search_mail` to something
+unconfusable, or making `search_people` state that it is not email.
 
 ---
 
-## Suggested order
+## Where it stopped
 
-1. **`BODYSTRUCTURE` part-fetch** — fixes §1.2 and §2.3 together; the largest
-   single win, and it makes every message open fast.
-2. **Pagination** — fixes §2.1; nearly free, the uid list is already in hand.
-3. **`UIDVALIDITY` plumbed through** — fixes §1.1 and unblocks any caching.
-4. **In-memory session cache** — most of §2.2 with no privacy change.
-5. **Sort by date** (§1.3) and **decode mailbox names** (§1.4) — small, visible.
-6. **Resolve §3.3** — it decides whether web mail exists at all.
-7. Then reassess the on-disk cache (§3.1). It may not be worth it once 1–4 land.
+Phases 1–4 shipped, then phase 7. **Phases 5 and 6 were skipped by decision**,
+after testing in production, and the effect is worth stating plainly rather than
+leaving it to be worked out from the sections above:
+
+- **Nothing in this feature has been tested against a corpus of real mail.**
+  Every automated test uses constructed fixtures. Confidence in the MIME and
+  `BODYSTRUCTURE` work rests on unit tests plus one person's use of one mailbox.
+- **The connection-per-op cost was never measured**, only estimated from the
+  code. The estimate says there is plenty of headroom on the web path; the
+  desktop path has no cap of ours at all.
+- **Three small correctness items remain open** — RFC 2231 filenames (§1.7,
+  which got *more* expensive when download shipped), the permissive fake server
+  (§5.1), and whether iCloud's `TEXT` search indexes bodies (§4).
+
+None of that is a reason the feature does not work — it does. It is the list of
+what a future problem would most likely be, and where to look first.
