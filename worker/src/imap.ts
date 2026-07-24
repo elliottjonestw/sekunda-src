@@ -323,6 +323,20 @@ function searchArgs(criteria: MailCriteria): { args: Arg[]; nonAscii: boolean } 
   if (criteria.before) args.push(`BEFORE ${criteria.before} `);
   if (criteria.unseen) args.push("UNSEEN ");
   if (args.length === 0) args.push("ALL");
+
+  // NO TRAILING SPACE BEFORE THE CRLF. Each term above appends its own
+  // separator, which leaves one dangling on the last of them, and iCloud
+  // answers `BAD Parse Error` to `UID SEARCH UNSEEN ` — the space is a token
+  // boundary promising a search key that never arrives. `ALL` was the only
+  // branch that didn't append one, which is why an unfiltered list worked and
+  // every filter failed.
+  const last = args[args.length - 1];
+  if (typeof last === "string" && last.endsWith(" ")) {
+    const trimmed = last.replace(/ +$/, "");
+    // A bare separator after a literal has nothing left once trimmed.
+    if (trimmed) args[args.length - 1] = trimmed;
+    else args.pop();
+  }
   return { args, nonAscii };
 }
 

@@ -551,6 +551,24 @@ fn search_args(criteria: &Criteria) -> Result<(Vec<Arg>, bool), String> {
     if args.is_empty() {
         args.push(Arg::Text("ALL".to_string()));
     }
+
+    // NO TRAILING SPACE BEFORE THE CRLF. Each term above appends its own
+    // separator, which leaves one dangling on the last of them, and iCloud
+    // answers `BAD Parse Error` to `UID SEARCH UNSEEN ` — the space is a token
+    // boundary promising a search key that never arrives. `ALL` was the only
+    // branch that didn't append one, which is why an unfiltered list worked and
+    // every filter failed.
+    if let Some(Arg::Text(last)) = args.last_mut() {
+        if last.ends_with(' ') {
+            let trimmed = last.trim_end().to_string();
+            // A bare separator after a literal has nothing left once trimmed.
+            if trimmed.is_empty() {
+                args.pop();
+            } else {
+                *last = trimmed;
+            }
+        }
+    }
     Ok((args, non_ascii))
 }
 
@@ -782,15 +800,42 @@ mod tests {
                 Arg::Literal(t) => format!("<literal:{}>", t),
             })
             .collect();
+        // Note the absence of a trailing space: iCloud answers `BAD Parse
+        // Error` to a command that ends with one.
         assert_eq!(
             rendered.join(""),
-            "FROM \"alex\" SUBJECT <literal:台北> SINCE 1-Jan-2026 UNSEEN "
+            "FROM \"alex\" SUBJECT <literal:台北> SINCE 1-Jan-2026 UNSEEN"
         );
 
         // No criteria is ALL — an empty key list is a syntax error, not
         // "everything".
         let (empty, _) = search_args(&Criteria::default()).unwrap();
         assert!(matches!(empty.as_slice(), [Arg::Text(t)] if t == "ALL"));
+    }
+
+    /// The bug that made every filtered search fail against iCloud: each term
+    /// appends its own separator, so the last one left a space before the CRLF.
+    #[test]
+    fn never_ends_a_search_with_a_separator() {
+        for criteria in [
+            Criteria { unseen: Some(true), ..Default::default() },
+            Criteria { from: Some("alex".into()), ..Default::default() },
+            Criteria { since: Some("1-Jan-2026".into()), ..Default::default() },
+            // A literal last: the dangling separator is its own arg, and
+            // trimming has to remove it rather than leave an empty token.
+            Criteria { subject: Some("台北".into()), ..Default::default() },
+            Criteria::default(),
+        ] {
+            let (args, _) = search_args(&criteria).unwrap();
+            match args.last().expect("never empty") {
+                Arg::Text(last) => assert!(
+                    !last.ends_with(' '),
+                    "search command ended with a separator: {:?}",
+                    last
+                ),
+                Arg::Literal(_) => {} // a literal ends at its own byte count
+            }
+        }
     }
 
     #[test]

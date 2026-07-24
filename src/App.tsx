@@ -32,11 +32,11 @@ type NavId = Exclude<View, "search" | "settings">;
 const NAV: { id: NavId; icon: LucideIcon }[] = [
   { id: "today", icon: Home },
   { id: "calendar", icon: Calendar },
+  { id: "mail", icon: Inbox },
   { id: "reminders", icon: Bell },
   { id: "todos", icon: ListChecks },
   { id: "notes", icon: StickyNote },
   { id: "people", icon: Users },
-  { id: "mail", icon: Inbox },
   { id: "assistant", icon: Sparkles },
 ];
 
