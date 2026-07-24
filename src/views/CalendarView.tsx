@@ -328,32 +328,35 @@ function TimeGrid({
   // mode has a single column that should fill the screen, so it keeps `w-full`.
   const scrolls = days.length > 1;
 
-  return (
-    <div className={`flex ${scrolls ? "w-max md:w-full" : ""}`}>
-      {/* hour labels */}
-      {/* Pinned while the week scrolls sideways below `md` — the times are the
-          only thing that makes a scrolled-to column readable. `md:static`
-          restores the plain column once every day fits without scrolling. */}
-      <div className="sticky left-0 z-20 w-10 shrink-0 bg-neutral-50 pt-6 dark:bg-neutral-900 md:static md:w-14 md:bg-transparent">
-        {hours.map((h) => (
-          <div key={h} style={{ height: HOUR_PX }} className="relative -top-2 pr-1 text-right text-xs text-neutral-400">
-            {h === 0 ? "" : fmtHour(h)}
-          </div>
-        ))}
-      </div>
+  // Column widths must match between the header row and the body row so the
+  // two line up; keep this identical in both places.
+  const dayColClass = `flex-1 border-l border-neutral-200 dark:border-neutral-700 ${scrolls ? "min-w-[6rem] md:min-w-0" : ""}`;
+  // The hour gutter is pinned while the week scrolls sideways below `md` — the
+  // times are the only thing that makes a scrolled-to column readable.
+  // `md:static` restores the plain column once every day fits without scrolling.
+  const gutterClass = "sticky left-0 w-10 shrink-0 bg-neutral-50 dark:bg-neutral-900 md:static md:w-14 md:bg-transparent";
 
-      <div className="flex flex-1">
-        {days.map((day) => {
-          const dayOccs = occurrences.filter((o) => isSameDay(o.start, day) && !o.event.all_day);
-          const allDayOccs = occurrences.filter((o) => isSameDay(o.start, day) && o.event.all_day);
-          const dayTodos = todos.filter((t) => t.due_at && isSameDay(new Date(t.due_at), day));
-          return (
-            // Seven columns in 375px would be 45px each. Below `md` a day
-            // keeps a legible minimum and the grid scrolls sideways instead;
-            // `md:min-w-0` hands the width back to flex-1 on desktop.
-            <div key={day.toISOString()} className={`flex-1 border-l border-neutral-200 dark:border-neutral-700 ${scrolls ? "min-w-[6rem] md:min-w-0" : ""}`}>
-              {/* day header */}
-              <div className={`sticky top-0 z-10 border-b border-neutral-200 bg-white py-1 text-center text-sm dark:border-neutral-700 dark:bg-neutral-900 ${isToday(day) ? "text-blue-600" : ""}`}>
+  return (
+    // Header and body are SEPARATE rows on purpose. The hour gutter and every
+    // day's hour grid then share one vertical origin (the top of the body row),
+    // so an event's `top` lines up with its hour label. The header must not live
+    // inside the day column above the grid: its height is variable (weekday +
+    // date, plus any all-day events/todos), and a fixed spacer over the gutter
+    // could never match it — which slid every timed event down by that mismatch.
+    <div className={scrolls ? "w-max md:w-full" : ""}>
+      {/* header row — sticks to the top as the body scrolls under it. `flex`
+          stretches every day header to the tallest, so all grids below start
+          at the same y even when only some days carry all-day items. */}
+      <div className="sticky top-0 z-30 flex">
+        {/* corner above the gutter: also pinned left so it covers the gutter
+            while the week scrolls sideways */}
+        <div className={`${gutterClass} sticky top-0 z-10`} />
+        <div className="flex flex-1">
+          {days.map((day) => {
+            const allDayOccs = occurrences.filter((o) => isSameDay(o.start, day) && o.event.all_day);
+            const dayTodos = todos.filter((t) => t.due_at && isSameDay(new Date(t.due_at), day));
+            return (
+              <div key={day.toISOString()} className={`${dayColClass} border-b bg-white py-1 text-center text-sm dark:bg-neutral-900 ${isToday(day) ? "text-blue-600" : ""}`}>
                 <div className="font-semibold">{fmtWeekdayShort(day)}</div>
                 <div className="text-lg">{day.getDate()}</div>
                 {(allDayOccs.length > 0 || dayTodos.length > 0) && (
@@ -367,38 +370,61 @@ function TimeGrid({
                   </div>
                 )}
               </div>
-              {/* hour cells */}
-              <div className="relative overflow-hidden" style={{ height: 24 * HOUR_PX }}>
-                {hours.map((h) => (
-                  <div
-                    key={h}
-                    onClick={() => onNewEvent(new Date(day.getFullYear(), day.getMonth(), day.getDate(), h))}
-                    style={{ height: HOUR_PX }}
-                    className="border-b border-neutral-100 hover:bg-blue-50/50 dark:border-neutral-800 dark:hover:bg-blue-900/20"
-                  />
-                ))}
-                {dayOccs.map((o, i) => {
-                  const startMin = o.start.getHours() * 60 + o.start.getMinutes();
-                  const durMin = o.end ? Math.max((o.end.getTime() - o.start.getTime()) / 60000, 30) : 60;
-                  const height = (durMin / 60) * HOUR_PX;
-                  const showTime = height >= 34; // hide the time line when the block is too short to fit it
-                  return (
-                    <button
-                      key={i}
-                      onClick={() => onOpen(o)}
-                      className="absolute left-1 right-1 flex flex-col overflow-hidden rounded px-1 py-0.5 text-left leading-tight text-white"
-                      style={{ top: (startMin / 60) * HOUR_PX, height, background: o.event.color ?? "#3b82f6" }}
-                      title={`${o.event.summary} · ${fmtTime(o.start)}`}
-                    >
-                      <span className="flex items-center gap-0.5 truncate text-[11px] font-medium"><span className="truncate">{o.event.summary}</span>{o.isRecurringInstance && <Repeat size={9} className="shrink-0" />}</span>
-                      {showTime && <span className="truncate text-[10px] opacity-80">{fmtTime(o.start)}</span>}
-                    </button>
-                  );
-                })}
-              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* body row — hour gutter + day grids, all sharing the same top */}
+      <div className="flex">
+        <div className={`${gutterClass} z-20`}>
+          {hours.map((h) => (
+            <div key={h} style={{ height: HOUR_PX }} className="relative -top-2 pr-1 text-right text-xs text-neutral-400">
+              {h === 0 ? "" : fmtHour(h)}
             </div>
-          );
-        })}
+          ))}
+        </div>
+
+        <div className="flex flex-1">
+          {days.map((day) => {
+            const dayOccs = occurrences.filter((o) => isSameDay(o.start, day) && !o.event.all_day);
+            return (
+              // Seven columns in 375px would be 45px each. Below `md` a day
+              // keeps a legible minimum and the grid scrolls sideways instead;
+              // `md:min-w-0` hands the width back to flex-1 on desktop.
+              <div key={day.toISOString()} className={dayColClass}>
+                <div className="relative overflow-hidden" style={{ height: 24 * HOUR_PX }}>
+                  {hours.map((h) => (
+                    <div
+                      key={h}
+                      onClick={() => onNewEvent(new Date(day.getFullYear(), day.getMonth(), day.getDate(), h))}
+                      style={{ height: HOUR_PX }}
+                      className="border-b border-neutral-100 hover:bg-blue-50/50 dark:border-neutral-800 dark:hover:bg-blue-900/20"
+                    />
+                  ))}
+                  {dayOccs.map((o, i) => {
+                    const startMin = o.start.getHours() * 60 + o.start.getMinutes();
+                    const durMin = o.end ? Math.max((o.end.getTime() - o.start.getTime()) / 60000, 30) : 60;
+                    const height = (durMin / 60) * HOUR_PX;
+                    const showTime = height >= 34; // hide the time line when the block is too short to fit it
+                    return (
+                      <button
+                        key={i}
+                        onClick={() => onOpen(o)}
+                        className="absolute left-1 right-1 flex flex-col overflow-hidden rounded px-1 py-0.5 text-left leading-tight text-white"
+                        style={{ top: (startMin / 60) * HOUR_PX, height, background: o.event.color ?? "#3b82f6" }}
+                        title={`${o.event.summary} · ${fmtTime(o.start)}`}
+                      >
+                        <span className="flex items-center gap-0.5 truncate text-[11px] font-medium"><span className="truncate">{o.event.summary}</span>{o.isRecurringInstance && <Repeat size={9} className="shrink-0" />}</span>
+                        {showTime && <span className="truncate text-[10px] opacity-80">{fmtTime(o.start)}</span>}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
