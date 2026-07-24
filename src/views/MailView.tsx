@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, Download, Inbox, Loader2, Lock, Paperclip, RefreshCw, MailOpen } from "lucide-react";
+import { ArrowLeft, Download, Inbox, Loader2, Paperclip, RefreshCw } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { MAIL_MAX_ATTACHMENT_BYTES } from "@secondbrain/shared";
 import { getMailSettings, saveMailSettings, type MailFolder } from "../lib/settings";
@@ -532,17 +532,6 @@ export default function MailView() {
           </div>
         )}
       </section>
-
-      {/* Said once, on the page, rather than only in the source: this reader
-          cannot change anything, and a mail client that shows no Delete button
-          should explain why rather than look unfinished.
-
-          Shown on every width. It used to be `hidden md:flex`, which hid it
-          exactly where it is needed most — on a phone the absence of buttons is
-          all there is to go on. */}
-      <div className="pointer-events-none absolute bottom-3 right-4 flex items-center gap-1.5 text-xs text-neutral-400">
-        {selected ? <Lock size={12} /> : <MailOpen size={12} />} {t("mail.readOnly")}
-      </div>
     </div>
   );
 }
