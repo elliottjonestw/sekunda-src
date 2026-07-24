@@ -1,3 +1,4 @@
+import type { ImapBodyPart } from "@secondbrain/shared";
 import type { MailAddress, MailAttachment } from "./types";
 
 /**
@@ -39,9 +40,20 @@ function decodeBytes(bytes: Uint8Array, charset: string): string {
   }
 }
 
+/**
+ * Base64 to bytes, tolerant of a stream that was cut mid-quantum.
+ *
+ * `atob` throws on a length that isn't a multiple of four, which matters now
+ * that a part can arrive truncated at an arbitrary byte offset: without the
+ * trim, a body one character past a boundary decodes to nothing at all rather
+ * than to almost all of itself. Dropping the ragged tail loses at most two
+ * characters of text.
+ */
 function decodeBase64(binary: string): string {
+  const clean = binary.replace(/[^A-Za-z0-9+/=]/g, "");
+  const whole = clean.slice(0, clean.length - (clean.length % 4));
   try {
-    return atob(binary.replace(/[^A-Za-z0-9+/=]/g, ""));
+    return atob(whole);
   } catch {
     return "";
   }
@@ -295,7 +307,10 @@ function walkPart(raw: string, depth: number): Walked {
   if (isAttachment || !type.startsWith("text/")) {
     return {
       text: "",
-      attachments: [{ filename, content_type: type || "application/octet-stream", size: body.length || null }],
+      // No part number: this walker works from the bytes, which carry no
+      // numbering. `attachmentsFromStructure` is the path that has one, and it
+      // is preferred whenever the server gave us a BODYSTRUCTURE.
+      attachments: [{ part: null, filename, content_type: type || "application/octet-stream", size: body.length || null }],
     };
   }
 
@@ -316,4 +331,60 @@ export function parseMessage(raw: string): { headers: Headers; text: string; att
   const headers = parseHeaders(split ? raw.slice(0, split.index) : raw);
   const { text, attachments } = walkPart(raw, 0);
   return { headers, text: text.replace(/\r\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim(), attachments };
+}
+
+// ---------------------------------------------------------------------------
+// The BODYSTRUCTURE path
+//
+// Everything above walks a whole raw message. These two take the server's own
+// description of the MIME tree instead, which is what makes it possible to open
+// a message with a 10 MB attachment without downloading the attachment.
+// ---------------------------------------------------------------------------
+
+/**
+ * One part that was fetched on its own, as readable text.
+ *
+ * The same two steps `decodePart` does — transfer encoding, then charset — plus
+ * the HTML flattening `walkPart` would have applied. It is a separate entry
+ * point rather than a reuse of the walker because there is no message around
+ * these bytes: the type and charset came from BODYSTRUCTURE, not from headers
+ * that are present.
+ */
+export function decodeStandalonePart(
+  body: string,
+  encoding: string,
+  charset: string | null,
+  contentType: string,
+): string {
+  const text = decodePart(body, encoding, charset ?? "utf-8");
+  return contentType.trim().toLowerCase() === "text/html" ? htmlToText(text) : text.trim();
+}
+
+/**
+ * The attachment list, from the structure rather than from the bytes.
+ *
+ * Better than the walker's list in the two ways that were actually wrong:
+ * sizes are the server's own count rather than however much of the part
+ * survived truncation, and an attached `message/rfc822` appears as one item
+ * instead of as whatever its innards happened to look like.
+ *
+ * What counts as an attachment, in order:
+ *  - never a part inside an attached message — the attached message is the
+ *    thing the user sees, and listing its parts alongside it lists the same
+ *    bytes twice;
+ *  - anything the sender marked `attachment`, or gave a filename;
+ *  - anything that is not text. A `multipart/alternative`'s HTML twin is text
+ *    with no filename and no disposition, so it correctly falls out here —
+ *    it is a version of the message, not something attached to it.
+ */
+export function attachmentsFromStructure(parts: ImapBodyPart[]): MailAttachment[] {
+  return parts
+    .filter((p) => !p.embedded)
+    .filter((p) => p.disposition === "attachment" || !!p.filename || p.type !== "text")
+    .map((p) => ({
+      part: p.part,
+      filename: p.filename,
+      content_type: `${p.type || "application"}/${p.subtype || "octet-stream"}`,
+      size: p.size,
+    }));
 }

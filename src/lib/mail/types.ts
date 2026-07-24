@@ -33,6 +33,16 @@ export interface MailMessageSummary {
 }
 
 export interface MailAttachment {
+  /**
+   * IMAP part number (`"2.1"`), when the server described the message's
+   * structure. Null on the small-message path, where the list is reconstructed
+   * from the bytes and there is no numbering to read.
+   *
+   * Nothing uses it yet: there is no download path. It is here because the part
+   * number is the *only* thing that would make one possible, and it costs
+   * nothing to carry.
+   */
+  part: string | null;
   filename: string | null;
   content_type: string;
   /** Bytes as encoded on the wire; absent when the part gave no length. */

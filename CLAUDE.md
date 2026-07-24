@@ -74,6 +74,11 @@ npm run test:e2e         # wdio run wdio.conf.ts → e2e/*.spec.ts
 **Mail (IMAP)**
 - **Read-only is enforced by the SERVER, not by us:** both executors open mailboxes with `EXAMINE` (never `SELECT`) and fetch with `BODY.PEEK` (never `BODY`, which sets `\Seen`). Keep it that way and a bug here still cannot mark, move or delete a message. There is no send path and no write tool; adding one is a deliberate change, not an extension.
 - **Three implementations of one conversation:** the envelope in `packages/shared/src/mail.ts`, executed by `worker/src/imap.ts` (web) or `src-tauri/src/mail.rs` (desktop). Rust can't import the schema, so it mirrors it by hand — a change to the envelope is a change in three files.
+- **A fetch is TWO commands, and the first one is `BODYSTRUCTURE`.** The old single `BODY.PEEK[]<0.262144>` didn't just waste an attachment's bytes, it *lost the body*: MIME parts arrive in the sender's order, so a large part ahead of the text put the text past the cap and the message opened blank. Now the structure is read first (it costs no body bytes and rides the same connection), then either the whole message (≤ `MAIL_SMALL_MESSAGE_BYTES`, or a structure we couldn't read — the fallback matters) or the one text part it names. **Keep the small-message path**: it is the well-tested whole-message walker, and leaving ordinary mail on it means a bug in the newer code can't reach the common case.
+- **`BODYSTRUCTURE` is written twice and the part-choice rule is written twice** — `worker/src/imapParse.ts` and `src-tauri/src/mail.rs`, with the same cases as tests in both (`npm test -w @secondbrain/worker`, `cargo test`). The choice can't move client-side: whoever holds the connection has to make it, and a second round trip is a second TLS handshake and a second login. Two things the index arithmetic depends on — a **multipart** is a node whose first element is a *list*, and the disposition sits at 8 for `text/*`, 10 for `message/rfc822`, 7 for everything else. Get that wrong and every attachment silently loses its filename.
+- **Pick the text part by TYPE, never by position**, and never take an attached message's text as the message's own. `embedded` marks everything inside a `message/rfc822`; the attached message itself is *not* embedded (it is this message's attachment), only its innards are. It is the fallback body, not the answer.
+- **`worker/src/imapParse.ts` has no socket in it on purpose.** `imap.ts` imports `cloudflare:sockets` and so only runs in an isolate; the parsing lives next door so `node --test` can run it. Its tests live in `worker/test/`, not `worker/src/` — that directory typechecks with only `@cloudflare/workers-types`, where `node:test` doesn't exist.
+- **A truncated part can be cut mid-base64-quantum.** `atob` throws on a length that isn't a multiple of four, so `decodeBase64` trims the ragged tail — without it a body one character past a boundary decodes to *nothing at all* rather than to almost all of itself.
 - **The executors return RAW bytes as binary strings** (one code unit per byte), and `src/lib/mail/mime.ts` is the only decoder. Decoding in the transport would corrupt every non-UTF-8 message irreversibly, and decoding in both would give desktop and web different answers about what an email says.
 - **Two IMAP framing traps, both handled and both invisible until they aren't:** a response line ending `{n}` means n raw bytes follow *and then the line continues* (a line-oriented reader mis-frames every non-ASCII subject); and `BODY[HEADER.FIELDS (…)]` is ONE atom, brackets and inner parens included — tokenizing it as several shifts every key/value pair in a FETCH by one and reads as "the server sent nothing".
 - **A rejected IMAP sign-in must be a 400, never a 401.** `lib/api.ts` treats 401 as an expired access token: it refreshes and *replays*, which would try the same bad password against Apple twice and present a lockout risk as a session problem.
@@ -206,6 +211,9 @@ src/
         images · notifications · settings · api · cache · auth · authStore · kdf · rss
         caldav/  client · discovery · events · ical    # talks to iCloud directly, not the Worker
         mail/    client · mime · mailbox · types         # read-only IMAP; mime.ts decodes for BOTH platforms
+                 #   mime.ts has two entry points: parseMessage (whole raw message,
+                 #   small mail) and decodeStandalonePart + attachmentsFromStructure
+                 #   (one isolated part + BODYSTRUCTURE, large mail)
   components/  ui · Avatar · ItemMeta · ItemCard · EventForm · MarkdownToolbar · NoteImage ·
         YouTubeEmbed
         today/   registry · types · CardShell · CardBoundary · useAsync · dayData ·
@@ -223,6 +231,8 @@ worker/
   src/routes/                # one file per area (auth · spaces · health · quotes ·
                              #   dav · feed — the RSS relay · mail — the IMAP relay)
   src/imap.ts                # hand-rolled minimal IMAP over cloudflare:sockets
+  src/imapParse.ts           # its pure half: tokens, BODYSTRUCTURE, responses.
+                             #   No socket, so `node --test` can run it (test/)
   src/db/                    # the ONLY place SQL is written; every query takes space_id
                              #   (+ recovery.ts, account.ts — identity, keyed by user)
   migrations/000N_*.sql      # 0001 init (squashed + tenancy) · 0002 auth throttle ·

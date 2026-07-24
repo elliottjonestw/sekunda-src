@@ -4,7 +4,10 @@ import {
 } from "@secondbrain/shared";
 import type { MailAccount, MailFolder } from "../settings";
 import { imapCall } from "./client";
-import { decodeWords, header, parseAddresses, parseHeaders, parseMailDate, parseMessage } from "./mime";
+import {
+  attachmentsFromStructure, decodeStandalonePart, decodeWords, header,
+  parseAddresses, parseHeaders, parseMailDate, parseMessage,
+} from "./mime";
 import {
   MailError,
   type MailMessageDetail, type MailMessageSummary, type MailSearchParams,
@@ -140,6 +143,13 @@ const MAX_BODY_CHARS = 20_000;
  * The uid is only meaningful inside its mailbox — the same number names a
  * different message in Sent — so the mailbox travels with it everywhere,
  * including through the assistant's tool arguments.
+ *
+ * Two shapes can come back, decided by the executor from the message's size
+ * (see `fetchMessage` in `worker/src/imap.ts`): the whole raw message, which the
+ * original MIME walker handles, or one isolated text part plus a description of
+ * the MIME tree. The second is what lets a message with a large attachment open
+ * at all — under the old whole-message cap, text sitting after the attachment
+ * was simply past the end.
  */
 export async function getMessage(
   account: MailAccount,
@@ -150,7 +160,23 @@ export async function getMessage(
   if (result.op !== "fetch") throw new MailError("The mail server answered the wrong question.");
 
   const msg = result.message;
-  const { headers, text, attachments } = parseMessage(msg.raw ?? "");
+  const structure = msg.structure ?? [];
+  const whole = msg.raw !== undefined ? parseMessage(msg.raw) : null;
+
+  const headers = whole ? whole.headers : parseHeaders(msg.headers ?? "");
+  const text = whole
+    ? whole.text
+    : msg.part
+      ? decodeStandalonePart(msg.part.body, msg.part.encoding, msg.part.charset, msg.part.type)
+      : "";
+  // The structure's list wins wherever we have one, on both paths: its sizes
+  // are the server's own count rather than whatever survived truncation, and it
+  // names the part numbers. The walker's list is the fallback for a message the
+  // server described in a way we could not read.
+  const attachments = structure.length > 0
+    ? attachmentsFromStructure(structure)
+    : whole?.attachments ?? [];
+
   const flags = msg.flags.map((f) => f.toLowerCase());
   const body = text.length > MAX_BODY_CHARS ? `${text.slice(0, MAX_BODY_CHARS)}…` : text;
 

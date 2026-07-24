@@ -38,6 +38,9 @@ const ICLOUD_PORT: u16 = 993;
 
 /// Mirrors `MAIL_MAX_BODY_BYTES`.
 const MAX_BODY_BYTES: usize = 262_144;
+/// Mirrors `MAIL_SMALL_MESSAGE_BYTES` — at or below this a message is fetched
+/// whole and walked by the client's original MIME parser.
+const SMALL_MESSAGE_BYTES: u64 = 65_536;
 const MAX_RESPONSE_BYTES: usize = MAX_BODY_BYTES + 65_536;
 const MAX_RESULTS: usize = 100;
 const DEADLINE: Duration = Duration::from_secs(20);
@@ -109,6 +112,35 @@ pub struct Folder {
     flags: Vec<String>,
 }
 
+/// One leaf of the MIME tree — mirrors `ImapBodyPart`.
+#[derive(Serialize, Clone, Default)]
+pub struct BodyPart {
+    /// IMAP part number, e.g. "2.1". Fetchable as `BODY.PEEK[<part>]`.
+    part: String,
+    #[serde(rename = "type")]
+    kind: String,
+    subtype: String,
+    params: std::collections::BTreeMap<String, String>,
+    encoding: String,
+    /// Octets as encoded on the wire, which is what the server counts.
+    size: Option<u64>,
+    disposition: Option<String>,
+    filename: Option<String>,
+    /// True when this part is inside an attached `message/rfc822`.
+    embedded: bool,
+}
+
+/// One isolated part's raw bytes — mirrors `ImapPartResult`.
+#[derive(Serialize)]
+pub struct PartResult {
+    part: String,
+    #[serde(rename = "type")]
+    kind: String,
+    encoding: String,
+    charset: Option<String>,
+    body: String,
+}
+
 #[derive(Serialize, Default)]
 pub struct Message {
     uid: u32,
@@ -120,7 +152,16 @@ pub struct Message {
     #[serde(skip_serializing_if = "Option::is_none")]
     raw: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    structure: Option<Vec<BodyPart>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    part: Option<PartResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     truncated: Option<bool>,
+    /// The bytes of an isolated part, as they came off a `BODY[2.1]` fetch.
+    /// Never serialized: `fetch_message` pairs it with the structure that
+    /// describes it and puts the result in `part` before anything is returned.
+    #[serde(skip)]
+    part_body: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -254,6 +295,200 @@ fn parse_tokens(s: &[char], start: usize) -> (Vec<Token>, usize) {
         items.push(Token::Atom(atom));
     }
     (items, i)
+}
+
+// ---------------------------------------------------------------------------
+// BODYSTRUCTURE (mirror of worker/src/imapParse.ts)
+//
+// The grammar, because reading it off RFC 3501 §7.4.2 every time is how the
+// index arithmetic below goes wrong:
+//
+//   multipart:  (<part> <part> … subtype (params) disposition language location)
+//               — one or more nested part LISTS, then the subtype STRING. The
+//                 leading run of lists is what distinguishes it from a leaf,
+//                 whose first element is the type string.
+//
+//   leaf:       (type subtype (params) id description encoding size …)
+//                 0    1        2      3  4           5        6
+//               then, by type:
+//                 text/*            7 = line count, extensions from 8
+//                 message/rfc822    7 = envelope, 8 = the NESTED bodystructure,
+//                                   9 = line count, extensions from 10
+//                 anything else     extensions from 7
+//               extensions are: md5, disposition, language, location — so the
+//               disposition sits one past wherever they start.
+// ---------------------------------------------------------------------------
+
+/// Nesting bound. A hand-crafted message can nest multiparts far enough to blow
+/// the stack, and nothing legitimate goes past a handful.
+const MAX_DEPTH: usize = 10;
+
+fn as_list(token: Option<&Token>) -> Option<&Vec<Token>> {
+    match token {
+        Some(Token::List(list)) => Some(list),
+        _ => None,
+    }
+}
+
+/// An atom the server may have sent as `NIL`, which means "no value" and is not
+/// the three-letter string it looks like.
+fn nilable(token: Option<&Token>) -> Option<String> {
+    let text = match token {
+        Some(Token::Atom(s)) => s.as_str(),
+        _ => "",
+    };
+    if text.is_empty() || text.eq_ignore_ascii_case("NIL") {
+        None
+    } else {
+        Some(text.to_string())
+    }
+}
+
+fn param_list(token: Option<&Token>) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    let Some(list) = as_list(token) else { return out };
+    let mut i = 0;
+    while i + 1 < list.len() {
+        let key = list[i].text().to_lowercase();
+        if let (false, Some(value)) = (key.is_empty(), nilable(list.get(i + 1))) {
+            out.insert(key, value);
+        }
+        i += 2;
+    }
+    out
+}
+
+fn disposition_of(token: Option<&Token>) -> (Option<String>, std::collections::BTreeMap<String, String>) {
+    let Some(list) = as_list(token) else {
+        return (None, std::collections::BTreeMap::new());
+    };
+    (
+        nilable(list.first()).map(|s| s.to_lowercase()),
+        param_list(list.get(1)),
+    )
+}
+
+/// Flatten a BODYSTRUCTURE into its leaves, each with the part number naming it.
+///
+/// `node` is the *body of a message* whose own part number is `prefix` (empty at
+/// the top level). That framing is what makes the `message/rfc822` case fall out
+/// for free: RFC 3501 §6.4.5 numbers the parts inside an attached message as the
+/// attachment's number, a period, and the numbering that message would have had
+/// on its own — which is precisely this function again with a new prefix.
+fn parse_body_structure(node: Option<&Token>, prefix: &str, embedded: bool, depth: usize) -> Vec<BodyPart> {
+    let Some(list) = as_list(node) else { return Vec::new() };
+    // An empty list is not a part with empty fields — it is a server saying
+    // nothing, and inventing a leaf out of it would put a nameless zero-byte
+    // attachment on the message.
+    if list.is_empty() || depth > MAX_DEPTH {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    if matches!(list.first(), Some(Token::List(_))) {
+        // Multipart: its children are 1..n under this prefix. The multipart
+        // itself is never emitted — it is structure, and there is nothing to do
+        // with one.
+        for (i, child) in list.iter().enumerate() {
+            if !matches!(child, Token::List(_)) {
+                break;
+            }
+            let number = if prefix.is_empty() {
+                format!("{}", i + 1)
+            } else {
+                format!("{}.{}", prefix, i + 1)
+            };
+            out.extend(walk_part(Some(child), &number, embedded, depth + 1));
+        }
+        return out;
+    }
+    // A message with no multipart at all still has one part, numbered 1.
+    let number = if prefix.is_empty() { "1".to_string() } else { format!("{}.1", prefix) };
+    walk_part(node, &number, embedded, depth + 1)
+}
+
+fn walk_part(node: Option<&Token>, part: &str, embedded: bool, depth: usize) -> Vec<BodyPart> {
+    let Some(list) = as_list(node) else { return Vec::new() };
+    if list.is_empty() || depth > MAX_DEPTH {
+        return Vec::new();
+    }
+    if matches!(list.first(), Some(Token::List(_))) {
+        let mut out = Vec::new();
+        for (i, child) in list.iter().enumerate() {
+            if !matches!(child, Token::List(_)) {
+                break;
+            }
+            out.extend(walk_part(Some(child), &format!("{}.{}", part, i + 1), embedded, depth + 1));
+        }
+        return out;
+    }
+
+    let kind = list.first().map(|t| t.text().to_lowercase()).unwrap_or_default();
+    let subtype = list.get(1).map(|t| t.text().to_lowercase()).unwrap_or_default();
+    let params = param_list(list.get(2));
+    let encoding = nilable(list.get(5)).unwrap_or_default().to_lowercase();
+    let size = list.get(6).and_then(|t| t.text().parse::<u64>().ok());
+
+    let is_message = kind == "message" && subtype == "rfc822";
+    let extensions = if kind == "text" {
+        8
+    } else if is_message {
+        10
+    } else {
+        7
+    };
+    let (disposition, disposition_params) = disposition_of(list.get(extensions + 1));
+
+    let leaf = BodyPart {
+        part: part.to_string(),
+        kind: kind.clone(),
+        subtype: subtype.clone(),
+        // The name lives in either place depending on the sending client, and
+        // neither is more correct — Content-Disposition wins because it is the
+        // one that means "this is a file".
+        filename: disposition_params
+            .get("filename")
+            .or_else(|| params.get("name"))
+            .cloned(),
+        params,
+        encoding,
+        size,
+        disposition,
+        embedded,
+    };
+
+    // An attached message is BOTH a thing to list and a tree to look inside.
+    let mut out = vec![leaf];
+    if is_message {
+        out.extend(parse_body_structure(list.get(8), part, true, depth + 1));
+    }
+    out
+}
+
+/// The part to show as the message's body.
+///
+/// **This rule is written twice** — here and in `worker/src/imapParse.ts` —
+/// because the choice has to be made by whoever holds the connection, and a
+/// second round trip from the client would be a second TLS handshake and a
+/// second login. So it is kept deliberately blunt: type first, never position.
+///
+/// Position is what the old whole-message walker used, and it is wrong for a
+/// `multipart/alternative` whose HTML part comes first. Preferring the message's
+/// own text over an attached message's is the other half: a forwarded email's
+/// body is not this email's body, but it is better than nothing, so it is the
+/// fallback rather than the answer.
+fn choose_text_part(parts: &[BodyPart]) -> Option<&BodyPart> {
+    let pick = |embedded: bool, subtype: &str| {
+        parts.iter().find(|p| {
+            p.embedded == embedded
+                && p.subtype == subtype
+                && p.kind == "text"
+                && p.disposition.as_deref() != Some("attachment")
+        })
+    };
+    pick(false, "plain")
+        .or_else(|| pick(false, "html"))
+        .or_else(|| pick(true, "plain"))
+        .or_else(|| pick(true, "html"))
 }
 
 // ---------------------------------------------------------------------------
@@ -503,8 +738,16 @@ fn parse_fetch(lines: &[String]) -> Vec<Message> {
                 }
                 "INTERNALDATE" => msg.internal_date = Some(value.text().to_string()),
                 "RFC822.SIZE" => msg.size = value.text().parse().ok(),
+                "BODYSTRUCTURE" | "BODY" => {
+                    msg.structure = Some(parse_body_structure(Some(value), "", false, 0));
+                }
+                // Matched in order of DECREASING specificity: the server echoes
+                // back the section it was asked for, so `BODY[HEADER.FIELDS
+                // (…)]`, `BODY[]<0>` and `BODY[2.1]<0>` all start `BODY[` and
+                // mean three different things.
                 _ if key.starts_with("BODY[HEADER") => msg.headers = Some(value.text().to_string()),
                 _ if key.starts_with("BODY[]") => msg.raw = Some(value.text().to_string()),
+                _ if key.starts_with("BODY[") => msg.part_body = Some(value.text().to_string()),
                 _ => {}
             }
             i += 2;
@@ -587,6 +830,78 @@ fn is_imap_date(value: &str) -> bool {
         && parts[2].chars().all(|c| c.is_ascii_digit())
 }
 
+/// One message: ask what it is made of, then fetch only what is worth having.
+///
+/// Mirrors `fetchMessage` in `worker/src/imap.ts`, which carries the full
+/// reasoning. In short: the old single `BODY.PEEK[]<0.262144>` downloaded
+/// attachments in order to throw them away, and lost the body outright whenever
+/// a large part happened to precede the text. `BODYSTRUCTURE` costs no body
+/// bytes, so asking first is nearly free on a connection that is already open.
+async fn fetch_message(conn: &mut Conn, uid: u32) -> Result<Message, String> {
+    let lines = conn
+        .command(&[Arg::Text(format!(
+            "UID FETCH {} (UID FLAGS INTERNALDATE RFC822.SIZE BODYSTRUCTURE \
+             BODY.PEEK[HEADER.FIELDS ({})])",
+            uid, HEADER_FIELDS
+        ))])
+        .await?;
+    let mut message = parse_fetch(&lines)
+        .into_iter()
+        .next()
+        .ok_or_else(|| "That message no longer exists.".to_string())?;
+
+    let size = message.size.unwrap_or(0);
+    let structure = message.structure.clone().unwrap_or_default();
+    // An unreadable structure is not fatal: fall back to the path that was here
+    // before, which needs nothing from the server but the bytes.
+    let whole = structure.is_empty() || (size > 0 && size <= SMALL_MESSAGE_BYTES);
+
+    if whole {
+        let lines = conn
+            .command(&[Arg::Text(format!(
+                "UID FETCH {} (UID BODY.PEEK[]<0.{}>)",
+                uid, MAX_BODY_BYTES
+            ))])
+            .await?;
+        message.raw = Some(
+            parse_fetch(&lines)
+                .into_iter()
+                .next()
+                .and_then(|m| m.raw)
+                .unwrap_or_default(),
+        );
+        message.truncated = Some(size as usize > MAX_BODY_BYTES);
+        return Ok(message);
+    }
+
+    let Some(text) = choose_text_part(&structure).cloned() else {
+        // A message that is nothing but attachments. Its structure still
+        // describes them, so there is something to show; there is just no body.
+        message.truncated = Some(false);
+        return Ok(message);
+    };
+
+    let lines = conn
+        .command(&[Arg::Text(format!(
+            "UID FETCH {} (UID BODY.PEEK[{}]<0.{}>)",
+            uid, text.part, MAX_BODY_BYTES
+        ))])
+        .await?;
+    message.part = Some(PartResult {
+        part: text.part.clone(),
+        kind: format!("{}/{}", text.kind, text.subtype),
+        encoding: text.encoding.clone(),
+        charset: text.params.get("charset").cloned(),
+        body: parse_fetch(&lines)
+            .into_iter()
+            .next()
+            .and_then(|m| m.part_body)
+            .unwrap_or_default(),
+    });
+    message.truncated = Some(text.size.unwrap_or(0) as usize > MAX_BODY_BYTES);
+    Ok(message)
+}
+
 async fn run_op(conn: &mut Conn, op: &MailOp) -> Result<OpResult, String> {
     match op {
         MailOp::List { .. } => Ok(OpResult::List {
@@ -597,18 +912,9 @@ async fn run_op(conn: &mut Conn, op: &MailOp) -> Result<OpResult, String> {
             reject_control(mailbox, "Mailbox names")?;
             // EXAMINE, not SELECT: read-only at the protocol level.
             conn.command(&[Arg::Text("EXAMINE ".into()), astring(mailbox)]).await?;
-            let lines = conn
-                .command(&[Arg::Text(format!(
-                    "UID FETCH {} (UID FLAGS INTERNALDATE RFC822.SIZE BODY.PEEK[]<0.{}>)",
-                    uid, MAX_BODY_BYTES
-                ))])
-                .await?;
-            let mut message = parse_fetch(&lines)
-                .into_iter()
-                .next()
-                .ok_or_else(|| "That message no longer exists.".to_string())?;
-            message.truncated = Some(message.size.unwrap_or(0) as usize > MAX_BODY_BYTES);
-            Ok(OpResult::Fetch { message })
+            Ok(OpResult::Fetch {
+                message: fetch_message(conn, *uid).await?,
+            })
         }
 
         MailOp::Search {
@@ -856,6 +1162,190 @@ mod tests {
         };
         assert!(search_args(&bad_date).is_err());
         assert!(is_imap_date("1-Jan-2026") && !is_imap_date("2026-01-01"));
+    }
+
+    // -----------------------------------------------------------------------
+    // BODYSTRUCTURE
+    //
+    // The same cases as `worker/test/imapParse.test.ts`, deliberately. This is
+    // the most intricate thing in IMAP and it is written twice; a desktop build
+    // and a web build that disagree about which part is the body show different
+    // emails for the same click.
+    // -----------------------------------------------------------------------
+
+    const TEXT_PLAIN: &str =
+        "(\"TEXT\" \"PLAIN\" (\"CHARSET\" \"utf-8\") NIL NIL \"QUOTED-PRINTABLE\" 1234 30 NIL NIL NIL NIL)";
+    const TEXT_HTML: &str =
+        "(\"TEXT\" \"HTML\" (\"CHARSET\" \"utf-8\") NIL NIL \"QUOTED-PRINTABLE\" 5678 90 NIL NIL NIL NIL)";
+    const PDF: &str = "(\"APPLICATION\" \"PDF\" (\"NAME\" \"report.pdf\") NIL NIL \"BASE64\" 10485760 NIL \
+                       (\"ATTACHMENT\" (\"FILENAME\" \"report.pdf\")) NIL NIL)";
+
+    fn structure(text: &str) -> Vec<BodyPart> {
+        let chars: Vec<char> = text.chars().collect();
+        let (items, _) = parse_tokens(&chars, 0);
+        parse_body_structure(items.first(), "", false, 0)
+    }
+
+    #[test]
+    fn a_plain_message_is_one_part_numbered_1() {
+        let parts = structure(TEXT_PLAIN);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].part, "1");
+        assert_eq!(parts[0].kind, "text");
+        assert_eq!(parts[0].subtype, "plain");
+        assert_eq!(parts[0].encoding, "quoted-printable");
+        assert_eq!(parts[0].params.get("charset").map(String::as_str), Some("utf-8"));
+        assert_eq!(parts[0].size, Some(1234));
+        assert_eq!(parts[0].disposition, None);
+    }
+
+    #[test]
+    fn numbers_multipart_children_and_never_emits_the_multipart() {
+        let parts = structure(&format!(
+            "(({}{} \"ALTERNATIVE\" (\"BOUNDARY\" \"abc\") NIL NIL NIL){} \"MIXED\" (\"BOUNDARY\" \"def\") NIL NIL NIL)",
+            TEXT_PLAIN, TEXT_HTML, PDF
+        ));
+        assert_eq!(
+            parts.iter().map(|p| p.part.as_str()).collect::<Vec<_>>(),
+            vec!["1.1", "1.2", "2"]
+        );
+        assert_eq!(
+            parts.iter().map(|p| format!("{}/{}", p.kind, p.subtype)).collect::<Vec<_>>(),
+            vec!["text/plain", "text/html", "application/pdf"]
+        );
+    }
+
+    /// The whole point: a 10 MB attachment's size and name are known without a
+    /// byte of it crossing the wire.
+    #[test]
+    fn reads_an_attachments_true_size_and_name() {
+        let parts = structure(&format!(
+            "({}{} \"MIXED\" (\"BOUNDARY\" \"d\") NIL NIL NIL)",
+            TEXT_PLAIN, PDF
+        ));
+        assert_eq!(parts[1].disposition.as_deref(), Some("attachment"));
+        assert_eq!(parts[1].filename.as_deref(), Some("report.pdf"));
+        assert_eq!(parts[1].size, Some(10_485_760));
+    }
+
+    /// HTML first — the ordering that made the old walker return flattened
+    /// markup when a readable plain part was sitting right behind it.
+    #[test]
+    fn chooses_the_text_part_by_type_not_position() {
+        let parts = structure(&format!(
+            "({}{} \"ALTERNATIVE\" (\"BOUNDARY\" \"a\") NIL NIL NIL)",
+            TEXT_HTML, TEXT_PLAIN
+        ));
+        let chosen = choose_text_part(&parts).expect("a plain part exists");
+        assert_eq!(chosen.part, "2");
+        assert_eq!(chosen.subtype, "plain");
+
+        // HTML-only still has a body.
+        let html_only = structure(&format!(
+            "({} \"ALTERNATIVE\" (\"BOUNDARY\" \"a\") NIL NIL NIL)",
+            TEXT_HTML
+        ));
+        assert_eq!(choose_text_part(&html_only).unwrap().subtype, "html");
+
+        // Attachments only: nothing to show, and that is not an error.
+        let no_text = structure(&format!(
+            "({}{} \"MIXED\" (\"BOUNDARY\" \"a\") NIL NIL NIL)",
+            PDF, PDF
+        ));
+        assert!(choose_text_part(&no_text).is_none());
+    }
+
+    #[test]
+    fn lists_an_attached_email_and_looks_inside_it() {
+        let nested = format!(
+            "({}{} \"ALTERNATIVE\" (\"BOUNDARY\" \"in\") NIL NIL NIL)",
+            TEXT_PLAIN, TEXT_HTML
+        );
+        let rfc822 = format!(
+            "(\"MESSAGE\" \"RFC822\" (\"NAME\" \"fwd.eml\") NIL NIL \"7BIT\" 4321 \
+             (\"Tue, 21 Jul 2026 10:00:00 +0800\" \"Fwd\" NIL NIL NIL NIL NIL NIL NIL NIL) \
+             {} 50 NIL (\"ATTACHMENT\" (\"FILENAME\" \"fwd.eml\")) NIL NIL)",
+            nested
+        );
+        let parts = structure(&format!(
+            "({}{} \"MIXED\" (\"BOUNDARY\" \"out\") NIL NIL NIL)",
+            TEXT_PLAIN, rfc822
+        ));
+
+        assert_eq!(
+            parts.iter().map(|p| p.part.as_str()).collect::<Vec<_>>(),
+            vec!["1", "2", "2.1", "2.2"]
+        );
+        assert_eq!(parts[1].filename.as_deref(), Some("fwd.eml"));
+        // The attached message is a part of THIS message, so it is not
+        // embedded — what is embedded is everything inside it, which is what
+        // keeps the forwarded email's body from becoming this email's body.
+        assert_eq!(
+            parts.iter().map(|p| p.embedded).collect::<Vec<_>>(),
+            vec![false, false, true, true]
+        );
+        assert_eq!(choose_text_part(&parts).unwrap().part, "1");
+    }
+
+    #[test]
+    fn falls_back_to_an_attached_emails_text_when_there_is_no_other() {
+        let rfc822 = format!(
+            "(\"MESSAGE\" \"RFC822\" NIL NIL NIL \"7BIT\" 4321 \
+             (\"date\" \"subj\" NIL NIL NIL NIL NIL NIL NIL NIL) {} 50 NIL NIL NIL NIL)",
+            TEXT_PLAIN
+        );
+        let parts = structure(&format!(
+            "({}{} \"MIXED\" (\"BOUNDARY\" \"o\") NIL NIL NIL)",
+            PDF, rfc822
+        ));
+        assert_eq!(
+            parts.iter().map(|p| p.part.as_str()).collect::<Vec<_>>(),
+            vec!["1", "2", "2.1"]
+        );
+        assert_eq!(choose_text_part(&parts).unwrap().part, "2.1");
+    }
+
+    /// `BODY[HEADER.FIELDS (…)]`, `BODY[]<0>` and `BODY[2.1]<0>` all start
+    /// `BODY[` and mean three different things.
+    #[test]
+    fn tells_body_keys_apart_by_specificity() {
+        let headers = "Subject: Hi\r\n\r\n";
+        let part = "SGVsbG8=";
+        let messages = parse_fetch(&[
+            format!(
+                "* 7 FETCH (UID 991 FLAGS (\\Seen) RFC822.SIZE 900000 \
+                 BODY[HEADER.FIELDS (DATE SUBJECT)] {{{}}}{} \
+                 BODYSTRUCTURE ({}{} \"MIXED\" (\"BOUNDARY\" \"d\") NIL NIL NIL))",
+                headers.len(),
+                headers,
+                TEXT_PLAIN,
+                PDF
+            ),
+            format!("* 7 FETCH (UID 991 BODY[1]<0> {{{}}}{})", part.len(), part),
+        ]);
+        assert_eq!(messages[0].headers.as_deref(), Some(headers));
+        assert!(messages[0].raw.is_none());
+        assert_eq!(
+            messages[0]
+                .structure
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|p| p.part.as_str())
+                .collect::<Vec<_>>(),
+            vec!["1", "2"]
+        );
+        assert_eq!(messages[1].part_body.as_deref(), Some(part));
+        assert!(messages[1].raw.is_none());
+    }
+
+    /// A structure we cannot read is empty, never a phantom part — the caller
+    /// treats empty as "fall back to fetching the whole message".
+    #[test]
+    fn junk_in_empty_out() {
+        assert!(structure("NIL").is_empty());
+        assert!(structure("()").is_empty());
+        assert!(choose_text_part(&[]).is_none());
     }
 
     #[test]

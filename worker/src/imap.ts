@@ -1,12 +1,16 @@
 import { connect } from "cloudflare:sockets";
 import {
   MAIL_MAX_BODY_BYTES,
-  type ImapFolderResult,
-  type ImapMessageResult,
+  MAIL_SMALL_MESSAGE_BYTES,
   type MailCriteria,
   type MailOp,
   type MailOpResult,
 } from "@secondbrain/shared";
+import { chooseTextPart, ImapError, parseFetch, parseFolders, parseUids } from "./imapParse";
+
+/** The pure parsing layer lives in `imapParse.ts` so it can run outside a
+ *  Worker isolate; `routes/mail.ts` still imports the error type from here. */
+export { ImapError };
 
 /**
  * A minimal IMAP4rev1 client for the Worker, over `cloudflare:sockets`.
@@ -49,13 +53,6 @@ const MAX_RESPONSE_BYTES = MAIL_MAX_BODY_BYTES + 65_536;
  *  Received/DKIM/ARC lines can be larger, and none of it is worth more. */
 const HEADER_FIELDS = "DATE SUBJECT FROM TO CC REPLY-TO MESSAGE-ID CONTENT-TYPE LIST-ID";
 
-export class ImapError extends Error {
-  constructor(message: string, readonly kind: "auth" | "network" | "protocol" = "protocol") {
-    super(message);
-    this.name = "ImapError";
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Bytes ↔ binary strings
 // ---------------------------------------------------------------------------
@@ -71,83 +68,6 @@ function binaryString(bytes: Uint8Array): string {
     out += String.fromCharCode(...bytes.subarray(i, i + 8192));
   }
   return out;
-}
-
-// ---------------------------------------------------------------------------
-// Response tokens
-// ---------------------------------------------------------------------------
-
-type Token = string | Token[];
-
-/**
- * Parse an IMAP response into nested tokens.
- *
- * Atoms are bracket-aware: `BODY[HEADER.FIELDS (DATE SUBJECT)]` and
- * `BODY[]<0>` are each ONE token, not four, because the brackets can contain
- * both spaces and parentheses. Getting that wrong shifts every key/value pair
- * in a FETCH response by one and reads as "the server sent nothing".
- */
-function parseTokens(s: string, start: number): { items: Token[]; i: number } {
-  const items: Token[] = [];
-  let i = start;
-  while (i < s.length) {
-    const c = s[i];
-    if (c === " ") { i++; continue; }
-    if (c === ")") { i++; break; }
-    if (c === "(") {
-      const inner = parseTokens(s, i + 1);
-      items.push(inner.items);
-      i = inner.i;
-      continue;
-    }
-    if (c === '"') {
-      let out = "";
-      i++;
-      while (i < s.length && s[i] !== '"') {
-        if (s[i] === "\\") i++;
-        out += s[i];
-        i++;
-      }
-      i++;
-      items.push(out);
-      continue;
-    }
-    if (c === "{") {
-      // The literal's bytes sit immediately after the marker — see readResponse.
-      const close = s.indexOf("}", i);
-      if (close < 0) throw new ImapError("Malformed response from the mail server.");
-      const n = Number(s.slice(i + 1, close));
-      const from = close + 1;
-      items.push(s.slice(from, from + n));
-      i = from + n;
-      continue;
-    }
-    let atom = "";
-    while (i < s.length && !" ()".includes(s[i])) {
-      if (s[i] === "[") {
-        let depth = 0;
-        do {
-          if (s[i] === "[") depth++;
-          else if (s[i] === "]") depth--;
-          atom += s[i];
-          i++;
-        } while (i < s.length && depth > 0);
-        continue;
-      }
-      atom += s[i];
-      i++;
-    }
-    items.push(atom);
-  }
-  return { items, i };
-}
-
-function isList(t: Token | undefined): t is Token[] {
-  return Array.isArray(t);
-}
-
-function str(t: Token | undefined): string {
-  return typeof t === "string" ? t : "";
 }
 
 // ---------------------------------------------------------------------------
@@ -289,22 +209,6 @@ class ImapConnection {
 // Ops
 // ---------------------------------------------------------------------------
 
-function parseFolders(lines: string[]): ImapFolderResult[] {
-  const folders: ImapFolderResult[] = [];
-  for (const line of lines) {
-    const { items } = parseTokens(line, 0);
-    if (str(items[0]) !== "*" || str(items[1]).toUpperCase() !== "LIST") continue;
-    const flags = isList(items[2]) ? items[2].filter((f): f is string => typeof f === "string") : [];
-    const delimiter = str(items[3]) === "NIL" ? "" : str(items[3]);
-    const name = str(items[4]);
-    if (!name) continue;
-    // \Noselect names a hierarchy node that cannot be opened. Offering it as a
-    // searchable mailbox produces a failure the user can do nothing about.
-    if (flags.some((f) => f.toLowerCase() === "\\noselect")) continue;
-    folders.push({ name, delimiter, flags });
-  }
-  return folders;
-}
 
 /** The criteria, as IMAP SEARCH arguments. `ALL` when nothing was asked for —
  *  an empty search key list is a syntax error, not "everything". */
@@ -344,43 +248,72 @@ function searchArgs(criteria: MailCriteria): { args: Arg[]; nonAscii: boolean } 
   return { args, nonAscii };
 }
 
-function parseUids(lines: string[]): number[] {
-  const uids: number[] = [];
-  for (const line of lines) {
-    const { items } = parseTokens(line, 0);
-    if (str(items[0]) !== "*" || str(items[1]).toUpperCase() !== "SEARCH") continue;
-    for (const t of items.slice(2)) {
-      const n = Number(str(t));
-      if (Number.isInteger(n) && n > 0) uids.push(n);
-    }
-  }
-  return uids;
-}
 
-/** Pull the key/value pairs out of `* n FETCH (…)`. Keys are matched by prefix
- *  because the body key carries its own section and octet range. */
-function parseFetch(lines: string[]): ImapMessageResult[] {
-  const out: ImapMessageResult[] = [];
-  for (const line of lines) {
-    const { items } = parseTokens(line, 0);
-    if (str(items[0]) !== "*" || str(items[2]).toUpperCase() !== "FETCH") continue;
-    const body = items[3];
-    if (!isList(body)) continue;
 
-    const msg: ImapMessageResult = { uid: 0, flags: [], internal_date: null, size: null };
-    for (let i = 0; i + 1 < body.length; i += 2) {
-      const key = str(body[i]).toUpperCase();
-      const value = body[i + 1];
-      if (key === "UID") msg.uid = Number(str(value)) || 0;
-      else if (key === "FLAGS" && isList(value)) msg.flags = value.filter((f): f is string => typeof f === "string");
-      else if (key === "INTERNALDATE") msg.internal_date = str(value) || null;
-      else if (key === "RFC822.SIZE") msg.size = Number(str(value)) || null;
-      else if (key.startsWith("BODY[HEADER")) msg.headers = str(value);
-      else if (key.startsWith("BODY[]")) msg.raw = str(value);
-    }
-    if (msg.uid > 0) out.push(msg);
+/**
+ * One message: ask what it is made of, then fetch only what is worth having.
+ *
+ * The old single command was `BODY.PEEK[]<0.262144>` — the first 256 KB of the
+ * whole raw message, attachments included. That downloads a PDF in order to
+ * throw it away, and it can *lose the body entirely*: MIME parts arrive in the
+ * order the sender chose, so a 10 MB image ahead of the text meant the text was
+ * past the cap and the message opened blank.
+ *
+ * `BODYSTRUCTURE` is the server's own parse of the MIME tree and costs no body
+ * bytes, so asking first is nearly free — the second command rides the same
+ * connection, which is already open and already authenticated.
+ *
+ * Two paths out of it, and the split is deliberate:
+ *   - **small** (or a structure we could not read) — take the whole message as
+ *     before and let the client's whole-message walker handle it. That walker
+ *     is the tested one, and it stays on the common path so a bug in the new
+ *     code cannot reach ordinary mail.
+ *   - **large** — fetch the one text part the structure names. Attachments are
+ *     still listed, with their real names, types and sizes, without a byte of
+ *     them crossing the wire.
+ */
+async function fetchMessage(conn: ImapConnection, uid: number) {
+  const message = parseFetch(await conn.command([
+    `UID FETCH ${uid} (UID FLAGS INTERNALDATE RFC822.SIZE BODYSTRUCTURE ` +
+    `BODY.PEEK[HEADER.FIELDS (${HEADER_FIELDS})])`,
+  ]))[0];
+  if (!message) throw new ImapError("That message no longer exists.");
+
+  const size = message.size ?? 0;
+  const structure = message.structure ?? [];
+  // An unreadable structure is not fatal: fall back to the path that was here
+  // before, which needs nothing from the server but the bytes.
+  const whole = structure.length === 0 || (size > 0 && size <= MAIL_SMALL_MESSAGE_BYTES);
+
+  if (whole) {
+    const body = parseFetch(await conn.command([
+      `UID FETCH ${uid} (UID BODY.PEEK[]<0.${MAIL_MAX_BODY_BYTES}>)`,
+    ]))[0];
+    message.raw = body?.raw ?? "";
+    message.truncated = size > MAIL_MAX_BODY_BYTES;
+    return message;
   }
-  return out;
+
+  const text = chooseTextPart(structure);
+  if (!text) {
+    // A message that is nothing but attachments. Its structure still describes
+    // them, so there is something to show; there is just no body to fetch.
+    message.truncated = false;
+    return message;
+  }
+
+  const body = parseFetch(await conn.command([
+    `UID FETCH ${uid} (UID BODY.PEEK[${text.part}]<0.${MAIL_MAX_BODY_BYTES}>)`,
+  ]))[0];
+  message.part = {
+    part: text.part,
+    type: `${text.type}/${text.subtype}`,
+    encoding: text.encoding,
+    charset: text.params.charset ?? null,
+    body: body?.partBody ?? "",
+  };
+  message.truncated = (text.size ?? 0) > MAIL_MAX_BODY_BYTES;
+  return message;
 }
 
 async function runOp(conn: ImapConnection, op: MailOp): Promise<MailOpResult> {
@@ -391,15 +324,7 @@ async function runOp(conn: ImapConnection, op: MailOp): Promise<MailOpResult> {
   // Read-only. The server enforces it from here on — see the header note.
   await conn.command(["EXAMINE ", astring(op.mailbox)]);
 
-  if (op.op === "fetch") {
-    const lines = await conn.command([
-      `UID FETCH ${op.uid} (UID FLAGS INTERNALDATE RFC822.SIZE BODY.PEEK[]<0.${MAIL_MAX_BODY_BYTES}>)`,
-    ]);
-    const message = parseFetch(lines)[0];
-    if (!message) throw new ImapError("That message no longer exists.");
-    message.truncated = (message.size ?? 0) > MAIL_MAX_BODY_BYTES;
-    return { op: "fetch", message };
-  }
+  if (op.op === "fetch") return { op: "fetch", message: await fetchMessage(conn, op.uid) };
 
   const { args, nonAscii } = searchArgs(op.criteria);
   const uids = parseUids(await conn.command([

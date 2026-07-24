@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
+    "//test": "The IMAP parsing layer (imapParse.ts) has no socket in it, so it runs under node. Lives in test/ rather than src/ because src is typechecked with only @cloudflare/workers-types, where node:test does not exist.",
+    "test": "tsx --test test/*.test.ts",
     "typecheck": "tsc --noEmit",
     "migrate:local": "wrangler d1 migrations apply secondbrain-dev --local",
     "migrate:staging": "wrangler d1 migrations apply secondbrain-staging --env staging --remote",

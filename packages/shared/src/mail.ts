@@ -42,9 +42,25 @@ import { z } from "zod";
  */
 export const ICLOUD_IMAP = { host: "imap.mail.me.com", port: 993 } as const;
 
-/** Bytes of a message body ever fetched in one op. Mail is read aloud by an
- *  assistant, not archived — a message past this is quoted, not lost. */
+/** Bytes of a single body fetch. Mail is read aloud by an assistant, not
+ *  archived — a message past this is quoted, not lost. */
 export const MAIL_MAX_BODY_BYTES = 262_144;
+
+/**
+ * The line between "fetch the whole message" and "fetch one part".
+ *
+ * A message at or below this goes down the original path: `BODY.PEEK[]` and the
+ * client's whole-message MIME walker, which is the well-tested one and handles
+ * every oddity by having met it. Above it, `BODYSTRUCTURE` says which part holds
+ * the text and only that part is downloaded — which is both cheaper and
+ * *correct*, because a 256 KB cap applied to the whole message loses the body
+ * entirely whenever a large attachment happens to precede it.
+ *
+ * 64 KB because that is comfortably above ordinary mail (a long HTML newsletter
+ * with inline styles is 30–50 KB) and comfortably below anything with a real
+ * attachment in it, so the common case never touches the newer code.
+ */
+export const MAIL_SMALL_MESSAGE_BYTES = 65_536;
 
 /** Messages one search may return. Matches ai.ts's own MAX_LIMIT. */
 export const MAIL_MAX_RESULTS = 100;
@@ -144,6 +160,59 @@ export interface ImapFolderResult {
   flags: string[];
 }
 
+/**
+ * One leaf of a message's MIME tree, as the server described it.
+ *
+ * This comes from `BODYSTRUCTURE`, which is the server's own parse of the tree
+ * and costs no body bytes at all. Knowing it before fetching anything is what
+ * makes it possible to download only the text and still report an attachment's
+ * name, type and *true* size — previously the sizes were whatever survived the
+ * 256 KB truncation, which is to say wrong exactly when it mattered.
+ *
+ * Multipart nodes are not represented: they are structure, not content, and
+ * nothing can be done with one. Their children are flattened into this list in
+ * document order, each carrying the IMAP part number that names it (`"2.1"`),
+ * which is the string a `BODY.PEEK[…]` fetch takes.
+ */
+export interface ImapBodyPart {
+  /** IMAP part number, e.g. `"1"`, `"2.1"`. Fetchable as `BODY.PEEK[<part>]`. */
+  part: string;
+  /** Lowercased major type: `"text"`, `"image"`, `"message"`. */
+  type: string;
+  /** Lowercased subtype: `"plain"`, `"rfc822"`. */
+  subtype: string;
+  /** Content-Type parameters, keys lowercased (`charset`, `name`). */
+  params: Record<string, string>;
+  /** Lowercased transfer encoding: `"base64"`, `"quoted-printable"`, `"7bit"`. */
+  encoding: string;
+  /** Octets **as encoded on the wire**, which is what the server counts. */
+  size: number | null;
+  /** Lowercased Content-Disposition type: `"attachment"`, `"inline"`, or null. */
+  disposition: string | null;
+  filename: string | null;
+  /**
+   * True when this part lives inside an attached `message/rfc822`.
+   *
+   * It is the difference between "this message's own text" and "the text of a
+   * message someone forwarded to me": both are `text/plain` parts of the same
+   * tree, and choosing the wrong one shows the wrong email.
+   */
+  embedded: boolean;
+}
+
+/** One isolated part's bytes — the large-message path's answer. Still transfer
+ *  encoded and still in its own charset, for the reason the block above gives:
+ *  only `mime.ts` decodes, and only once. */
+export interface ImapPartResult {
+  part: string;
+  /** `"text/plain"` or `"text/html"` — what the client needs to know to decide
+   *  whether the decoded text has to be flattened out of markup. */
+  type: string;
+  encoding: string;
+  charset: string | null;
+  body: string;
+}
+
 export interface ImapMessageResult {
   uid: number;
   flags: string[];
@@ -155,9 +224,16 @@ export interface ImapMessageResult {
    */
   internal_date: string | null;
   size: number | null;
-  /** Raw header block (search), or the whole raw message (fetch). */
+  /** Raw header block (search, and the large-message fetch path). */
   headers?: string;
+  /** The whole raw message. Present only on the small-message fetch path. */
   raw?: string;
+  /** The MIME tree, on a fetch. Absent when the server sent nothing usable, in
+   *  which case the fetch fell back to the whole-message path. */
+  structure?: ImapBodyPart[];
+  /** The one text part that was downloaded, on the large-message fetch path.
+   *  Absent when `raw` is present, or when the message has no text at all. */
+  part?: ImapPartResult;
   /** True when the body was cut at MAIL_MAX_BODY_BYTES. */
   truncated?: boolean;
 }

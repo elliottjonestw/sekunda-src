@@ -6,7 +6,7 @@ import {
   DEFAULT_MAILBOX, getMessage, searchMail,
   type MailAddress, type MailMessageDetail, type MailMessageSummary,
 } from "../lib/mail";
-import { fmtDateTime } from "../lib/format";
+import { fmtBytes, fmtDateTime } from "../lib/format";
 import { Button } from "../components/ui";
 import { useFirstLoad, firstLoadScreen, SlowLoad } from "../components/ViewGate";
 
@@ -253,6 +253,13 @@ export default function MailView() {
                       >
                         <Paperclip size={12} className="shrink-0" />
                         {a.filename ?? a.content_type}
+                        {/* The size is the server's own count, off BODYSTRUCTURE
+                            — not "however much of the part survived the fetch",
+                            which is what it used to be and was wrong precisely
+                            when the attachment was big enough to care about. */}
+                        {a.size !== null && (
+                          <span className="text-neutral-400 dark:text-neutral-500">{fmtBytes(a.size)}</span>
+                        )}
                       </span>
                     ))}
                   </div>

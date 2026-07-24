@@ -160,6 +160,28 @@ export function fmtChangePercent(percent: number): string {
   }).format(percent / 100);
 }
 
+/**
+ * A byte count, at the scale a person reads it: "812 KB", "3.4 MB".
+ *
+ * Decimal units, not binary — an attachment's size is what a mail client and a
+ * file manager show, and both of those count in thousands. Locale-aware for the
+ * decimal separator; the unit itself is not translated because "KB" and "MB"
+ * are written the same way everywhere this app runs.
+ */
+export function fmtBytes(bytes: number): string {
+  const units = ["B", "KB", "MB", "GB"];
+  let value = Math.max(bytes, 0);
+  let unit = 0;
+  while (value >= 1000 && unit < units.length - 1) {
+    value /= 1000;
+    unit++;
+  }
+  // No decimal on bytes (there are none) or once past a hundred, where a tenth
+  // of a megabyte is noise.
+  const digits = unit === 0 || value >= 100 ? 0 : 1;
+  return `${new Intl.NumberFormat(localeTag(), { maximumFractionDigits: digits }).format(value)} ${units[unit]}`;
+}
+
 /** Date -> value for <input type="datetime-local"> (local time, no seconds). */
 export function toLocalInput(d: Date): string {
   const pad = (n: number) => String(n).padStart(2, "0");
