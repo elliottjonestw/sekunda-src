@@ -699,8 +699,19 @@ export function getMailSettings(): MailSettings {
 export function saveMailSettings(patch: Partial<MailSettings>): MailSettings {
   const next = { ...getMailSettings(), ...patch };
   localStorage.setItem(scopedKey(MAIL_KEY), JSON.stringify(next));
+  // Connecting or disconnecting adds or removes a whole page from the sidebar,
+  // and that sidebar is rendered by `App` — which has no reason to re-render
+  // when a pane inside it writes to localStorage. This is the narrowest thing
+  // that closes the gap: one event, one listener, no shared state.
+  //
+  // The calendar bucket needs no equivalent because it changes nothing outside
+  // the pane that writes it.
+  window.dispatchEvent(new Event(MAIL_ACCOUNT_EVENT));
   return next;
 }
+
+/** Fired when the connected inbox appears or disappears. See `saveMailSettings`. */
+export const MAIL_ACCOUNT_EVENT = "sekunda:mail-account";
 
 /**
  * Is an inbox connected? This gates the assistant's mail tools — off, their

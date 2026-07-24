@@ -12,7 +12,8 @@
     "notes": "備忘錄",
     "people": "聯絡人",
     "assistant": "助理",
-    "settings": "設定"
+    "settings": "設定",
+    "mail": "郵件"
   },
   "common": {
     "save": "儲存",
@@ -560,6 +561,24 @@
       "dictate": "語音輸入",
       "dictating": "聽寫中…"
     }
+  },
+  "mail": {
+    "searchPlaceholder": "搜尋此信箱…",
+    "unreadOnly": "僅未讀",
+    "refresh": "重新整理",
+    "readOnly": "唯讀",
+    "empty": "此信箱沒有郵件。",
+    "noMatches": "沒有符合的郵件。",
+    "noBody": "此郵件沒有文字內容。",
+    "selectPrompt": "選擇一封郵件即可閱讀。",
+    "connectPrompt": "請在「設定 → 郵件」中連接 iCloud 信箱，即可在此閱讀郵件。",
+    "unknownSender": "未知寄件者",
+    "to": "收件者",
+    "cc": "副本",
+    "truncated": "此郵件較長，僅顯示開頭部分。",
+    "attachmentsHint": "附件僅列出，無法在此開啟 —— 請使用「郵件」App 或 iCloud.com。",
+    "showingAll_other": "{{count}} 封郵件。",
+    "showingNewest": "顯示 {{total}} 封符合郵件中最新的 {{count}} 封。"
   },
   "assistant": {
     "title": "AI 助理",

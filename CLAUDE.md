@@ -79,6 +79,9 @@ npm run test:e2e         # wdio run wdio.conf.ts → e2e/*.spec.ts
 - **A rejected IMAP sign-in must be a 400, never a 401.** `lib/api.ts` treats 401 as an expired access token: it refreshes and *replays*, which would try the same bad password against Apple twice and present a lockout risk as a session problem.
 - **Search criteria are structured, never a command string**, and every value is quoted by the executor. CR/LF is refused at three layers. The client cannot compose IMAP syntax; that is the injection boundary.
 - **IMAP SEARCH has no ranking.** Results are the most *recent* matches. Any surface that implies relevance is lying, which is why the tool description says so to the model.
+- **The Mail page is conditional, and the sidebar is rendered by `App`** — which has no reason to re-render when a Settings pane writes localStorage. `saveMailSettings` fires `MAIL_ACCOUNT_EVENT` and `App` listens; without it, connecting an inbox leaves the page invisible until the next navigation.
+- **A keystroke in the mail search box is a TLS handshake and a round-trip to Apple.** It is debounced (500 ms) for the reason `searchEvents` documents for CalDAV, and opened messages are cached for the life of the view. Don't add a live-filter that re-queries per character.
+- **Message bodies render as PLAIN TEXT** — never markdown, never `dangerouslySetInnerHTML`, and links are deliberately not clickable. `mime.ts` has already flattened any HTML part; widening this to rendered markup would hand a stranger's mail a foothold in a webview holding the session.
 - **Never log a request or response** in `worker/src/routes/mail.ts` or `mail.rs` — same rule as `dav.ts`, higher stakes: an inbox carries every other service's reset links.
 
 **Platform**
@@ -206,7 +209,7 @@ src/
         today/   registry · types · CardShell · CardBoundary · useAsync · dayData ·
                  derive · <Name>Widget    # one file per Today card
         assistant/  useAssistantChat · MessageList · Composer · AssistantPopup
-  views/       Today · Calendar · Reminders · Todos · Notes · People · Assistant · Settings · Search
+  views/       Today · Calendar · Reminders · Todos · Notes · People · Mail · Assistant · Settings · Search
 e2e/           # WebDriver specs (real app only; not in tsconfig)
 packages/shared/  # zod schemas + inferred types, matchQuery ranking, normalizeKey,
                   # DATA_TABLES. Imported by BOTH sides; no Cloudflare/Tauri imports.

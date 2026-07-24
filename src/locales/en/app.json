@@ -12,7 +12,8 @@
     "notes": "Notes",
     "people": "People",
     "assistant": "Assistant",
-    "settings": "Settings"
+    "settings": "Settings",
+    "mail": "Mail"
   },
   "common": {
     "save": "Save",
@@ -563,6 +564,25 @@
       "dictate": "Dictate",
       "dictating": "Dictating…"
     }
+  },
+  "mail": {
+    "searchPlaceholder": "Search this mailbox…",
+    "unreadOnly": "Unread only",
+    "refresh": "Refresh",
+    "readOnly": "Read-only",
+    "empty": "Nothing in this mailbox.",
+    "noMatches": "No messages match.",
+    "noBody": "This message has no text.",
+    "selectPrompt": "Pick a message to read it.",
+    "connectPrompt": "Connect an iCloud inbox in Settings → Mail to read your email here.",
+    "unknownSender": "Unknown sender",
+    "to": "To",
+    "cc": "Cc",
+    "truncated": "This message was long, so only the beginning is shown.",
+    "attachmentsHint": "Attachments are listed but can't be opened here — use Mail or iCloud.com.",
+    "showingAll_one": "{{count}} message.",
+    "showingAll_other": "{{count}} messages.",
+    "showingNewest": "Showing the {{count}} newest of {{total}} matches."
   },
   "assistant": {
     "title": "AI Assistant",

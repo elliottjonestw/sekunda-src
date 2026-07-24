@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
-import { Home, Calendar, Bell, ListChecks, StickyNote, Users, Search, Brain, Sparkles, Settings as SettingsIcon, LogOut, Menu, LucideIcon } from "lucide-react";
+import { Home, Calendar, Bell, ListChecks, StickyNote, Users, Search, Brain, Sparkles, Settings as SettingsIcon, LogOut, Menu, Inbox, LucideIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import TodayView from "./views/TodayView";
 import CalendarView from "./views/CalendarView";
 import RemindersView from "./views/RemindersView";
 import TodosView from "./views/TodosView";
 import NotesView from "./views/NotesView";
+import MailView from "./views/MailView";
 import PeopleView from "./views/PeopleView";
 import SearchView from "./views/SearchView";
 import AssistantView from "./views/AssistantView";
@@ -14,13 +15,13 @@ import { useAssistantChat, type UiMessage } from "./components/assistant/useAssi
 import SettingsView from "./views/SettingsView";
 import type { NavTarget } from "./types";
 import { startReminderPoller } from "./lib/notifications";
-import { syncSettingsFromCloud } from "./lib/settings";
+import { syncSettingsFromCloud, hasMailAccount, MAIL_ACCOUNT_EVENT } from "./lib/settings";
 import { isAssistantConfigured } from "./lib/secrets";
 import { logout } from "./lib/auth";
 import { applyTheme, watchSystemTheme } from "./lib/theme";
 import { getCachedSession } from "./lib/authStore";
 
-type View = "today" | "calendar" | "reminders" | "todos" | "notes" | "people" | "assistant" | "search" | "settings";
+type View = "today" | "calendar" | "reminders" | "todos" | "notes" | "people" | "mail" | "assistant" | "search" | "settings";
 
 // Secret keystroke: hold Shift + 8 + 9 together anywhere in the app to open the
 // "load demo data" prompt. Keys are matched by physical code so it works
@@ -35,12 +36,19 @@ const NAV: { id: NavId; icon: LucideIcon }[] = [
   { id: "todos", icon: ListChecks },
   { id: "notes", icon: StickyNote },
   { id: "people", icon: Users },
+  { id: "mail", icon: Inbox },
   { id: "assistant", icon: Sparkles },
 ];
 
 export default function App() {
   const { t } = useTranslation();
   const [view, setView] = useState<View>("today");
+  // Mail is the one page that isn't always there: with no inbox connected it
+  // has nothing to show, so it stays out of the sidebar rather than leading to
+  // an empty page that has to explain itself. Recomputed on the event
+  // `saveMailSettings` fires, so connecting an inbox reveals it immediately
+  // rather than on the next navigation.
+  const [mailConnected, setMailConnected] = useState(hasMailAccount);
   const [search, setSearch] = useState("");
   const [ready, setReady] = useState(false);
   // A specific item to open when navigating into a view (e.g. clicking a note
@@ -77,6 +85,20 @@ export default function App() {
     setMessages: setChatMessages,
     spaceEnabled: isAssistantConfigured() && (view === "assistant" || popupOpen),
   });
+
+  useEffect(() => {
+    const onMailAccount = () => {
+      const connected = hasMailAccount();
+      setMailConnected(connected);
+      // Disconnecting happens in Settings, so this is belt-and-braces — but a
+      // page whose sidebar entry has just gone must not stay on screen.
+      // Functional form because this listener is registered once and would
+      // otherwise close over the first `view`.
+      if (!connected) setView((v) => (v === "mail" ? "today" : v));
+    };
+    window.addEventListener(MAIL_ACCOUNT_EVENT, onMailAccount);
+    return () => window.removeEventListener(MAIL_ACCOUNT_EVENT, onMailAccount);
+  }, []);
 
   // Read once per render rather than held in state: AuthGate remounts this
   // whole tree on a different user, so it cannot go stale underneath us.
@@ -199,7 +221,7 @@ export default function App() {
           <div className="mb-3">{searchBox}</div>
         </div>
         <div className="flex-1 space-y-0.5 px-2">
-          {NAV.map((n) => {
+          {NAV.filter((n) => n.id !== "mail" || mailConnected).map((n) => {
             const Icon = n.icon;
             return (
               <button
@@ -255,6 +277,7 @@ export default function App() {
         {view === "todos" && <TodosView onChange={bump} initialId={todoTarget ?? undefined} />}
         {view === "notes" && <NotesView onChange={bump} initialId={noteTarget ?? undefined} />}
         {view === "people" && <PeopleView onChange={bump} initialId={personTarget ?? undefined} />}
+        {view === "mail" && <MailView />}
         {view === "assistant" && (
           <AssistantView
            
