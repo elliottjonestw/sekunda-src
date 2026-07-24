@@ -19,7 +19,7 @@ import i18next from "i18next";
 import { format, startOfDay } from "date-fns";
 // Locale-free numeric/ISO helpers, so importing them here doesn't localize
 // anything the model reads.
-import { ageFromBirthday, nextBirthday } from "./format";
+import { ageFromBirthday, nextBirthday, allDayIsoFromDate } from "./format";
 // The daily summary is the one model output shown verbatim to the user, so it
 // needs the UI language by name.
 import { LANGUAGES, currentLanguage } from "./i18n";
@@ -1708,13 +1708,16 @@ async function toolCreateEvent(args: Record<string, unknown>) {
   }
 
   const allDay = args.all_day === true;
+  // All-day events store a floating wall date (timezone-independent), taken from
+  // the local date of the instant the model sent. Timed events stay instants.
+  const start = allDay ? allDayIsoFromDate(new Date(dtstart)) : dtstart;
   const dtend = allDay ? null : (asIso(args.end) ?? new Date(new Date(dtstart).getTime() + 3600e3).toISOString());
   try {
     const id = await createCalendarEvent(calendarId, {
       summary: args.summary.trim(),
       description: typeof args.description === "string" ? args.description : null,
       location: typeof args.location === "string" ? args.location : null,
-      dtstart, dtend, all_day: allDay ? 1 : 0,
+      dtstart: start, dtend, all_day: allDay ? 1 : 0,
       rrule: typeof args.rrule === "string" ? args.rrule : null,
       exdates: null, status: "CONFIRMED",
       categories: typeof args.category === "string" ? JSON.stringify([args.category]) : null,
@@ -1738,10 +1741,17 @@ async function toolUpdateEvent(args: Record<string, unknown>) {
   if ("summary" in args) patch.summary = String(args.summary);
   if ("description" in args) patch.description = args.description as string | null;
   if ("location" in args) patch.location = args.location as string | null;
+  // The event's all-day state after this update decides whether datetimes are
+  // stored as floating wall dates (timezone-independent) or absolute instants.
+  const allDayTarget = "all_day" in args ? !!args.all_day : ev.all_day === 1;
+  if ("all_day" in args) patch.all_day = args.all_day ? 1 : 0;
   if ("start" in args) {
     const iso = asIso(args.start);
     if (!iso) return { error: "A valid ISO start is required." };
-    patch.dtstart = iso;
+    patch.dtstart = allDayTarget ? allDayIsoFromDate(new Date(iso)) : iso;
+  } else if (allDayTarget && ev.all_day !== 1) {
+    // Turning a timed event all-day with no new start: pin its local wall date.
+    patch.dtstart = allDayIsoFromDate(new Date(ev.dtstart));
   }
   if ("end" in args) {
     // `null` is the documented way to clear the end; a present-but-unparseable
@@ -1751,10 +1761,9 @@ async function toolUpdateEvent(args: Record<string, unknown>) {
     } else {
       const iso = asIso(args.end);
       if (!iso) return { error: "A valid ISO end is required (pass null to clear)." };
-      patch.dtend = iso;
+      patch.dtend = allDayTarget ? allDayIsoFromDate(new Date(iso)) : iso;
     }
   }
-  if ("all_day" in args) patch.all_day = args.all_day ? 1 : 0;
   if ("rrule" in args) patch.rrule = args.rrule ? String(args.rrule) : null;
   if ("category" in args) patch.categories = args.category ? JSON.stringify([args.category]) : null;
 

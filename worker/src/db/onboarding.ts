@@ -57,8 +57,11 @@ export function seedWelcomeStatements(
   // the same value the client stores (local time + offset back to UTC).
   const at = (h: number, mi: number) =>
     new Date(Date.UTC(y, mo, d, h, mi) + off * 60000).toISOString();
-  const midnight = at(0, 0); // all-day event dtstart, mirroring EventForm
   const noon = at(12, 0); // a due time that reads as "today" without arriving overdue
+  // All-day events store a FLOATING wall date (no zone), so the date can't drift
+  // across timezones — mirrors the client (lib/format.ts allDayIso, EventForm).
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const allDayStart = `${y}-${pad(mo + 1)}-${pad(d)}T00:00:00`;
 
   return [
     // To-do: "Connect Apple Calendar", filed under the Personal list.
@@ -99,7 +102,7 @@ export function seedWelcomeStatements(
          VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .bind(
-        crypto.randomUUID(), spaceId, "Organize my life", null, null, midnight,
+        crypto.randomUUID(), spaceId, "Organize my life", null, null, allDayStart,
         null, 1, "CONFIRMED", now, now,
       ),
   ];

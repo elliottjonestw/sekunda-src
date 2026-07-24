@@ -11,6 +11,7 @@
 import ICAL from "ical.js";
 import type { EventOccurrence, UnifiedEvent } from "../../types";
 import type { CalDavCalendar } from "../settings";
+import { allDayIso, allDayWallDate, nextWallDate } from "../format";
 
 /** Safety cap so a pathological RRULE can't spin forever. */
 const MAX_OCCURRENCES = 750;
@@ -92,8 +93,14 @@ function toUnified(
     summary: event.summary || "(untitled)",
     description: event.description || null,
     location: event.location || null,
-    dtstart: event.startDate ? event.startDate.toJSDate().toISOString() : new Date().toISOString(),
-    dtend: event.endDate ? event.endDate.toJSDate().toISOString() : null,
+    // All-day: keep it a floating wall date so it can't drift across timezones
+    // (see lib/format.ts). Timed: a true absolute instant, TZID already resolved.
+    dtstart: event.startDate
+      ? allDay ? floatingWallDate(event.startDate) : event.startDate.toJSDate().toISOString()
+      : new Date().toISOString(),
+    dtend: event.endDate
+      ? allDay ? floatingWallDate(event.endDate) : event.endDate.toJSDate().toISOString()
+      : null,
     tzid: readTzid(event.startDate ?? null),
     all_day: allDay ? 1 : 0,
     rrule: readRrule(ve),
@@ -250,11 +257,13 @@ export function buildCalendarData(ev: UnifiedEvent): string {
   if (ev.status) ve.addPropertyWithValue("status", ev.status);
 
   if (ev.all_day) {
-    const start = new Date(ev.dtstart);
-    ve.addPropertyWithValue("dtstart", ICAL.Time.fromDateString(toDateString(start)));
+    // Slice the stored wall date straight through — no Date round-trip, so the
+    // VALUE=DATE we write can't shift a day under the machine's timezone.
+    const start = allDayWallDate(ev.dtstart);
+    ve.addPropertyWithValue("dtstart", ICAL.Time.fromDateString(start));
     // DTEND is exclusive for all-day events: default to the day after DTSTART.
-    const end = ev.dtend ? new Date(ev.dtend) : new Date(start.getTime() + 864e5);
-    ve.addPropertyWithValue("dtend", ICAL.Time.fromDateString(toDateString(end)));
+    const end = ev.dtend ? allDayWallDate(ev.dtend) : nextWallDate(start);
+    ve.addPropertyWithValue("dtend", ICAL.Time.fromDateString(end));
   } else {
     addTimed(ve, "dtstart", new Date(ev.dtstart), zone);
     if (ev.dtend) addTimed(ve, "dtend", new Date(ev.dtend), zone);
@@ -275,7 +284,7 @@ export function buildCalendarData(ev: UnifiedEvent): string {
         if (isNaN(d.getTime())) continue;
         // EXDATE must match DTSTART's value type and zone, or it may fail to
         // suppress the occurrence and the skipped event comes back.
-        if (ev.all_day) ve.addPropertyWithValue("exdate", ICAL.Time.fromDateString(toDateString(d)));
+        if (ev.all_day) ve.addPropertyWithValue("exdate", ICAL.Time.fromDateString(allDayWallDate(iso)));
         else addTimed(ve, "exdate", d, zone);
       }
     } catch {
@@ -295,8 +304,10 @@ export function buildCalendarData(ev: UnifiedEvent): string {
   return vcal.toString();
 }
 
-/** Local calendar date as YYYY-MM-DD (what VALUE=DATE expects). */
-function toDateString(d: Date): string {
+/** A VALUE=DATE ICAL.Time -> our floating all-day dtstart (`yyyy-MM-ddT00:00:00`).
+ *  Reads the calendar-date components directly (never toJSDate, which resolves
+ *  to a local-midnight instant) so the wall date survives any timezone. */
+function floatingWallDate(t: ICAL.Time): string {
   const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  return allDayIso(`${t.year}-${pad(t.month)}-${pad(t.day)}`);
 }

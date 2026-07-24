@@ -199,6 +199,48 @@ export function toDateInput(d: Date): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
+// ---------------------------------------------------------------------------
+// All-day event dates.
+//
+// An all-day event's dtstart/dtend is a FLOATING wall-clock datetime
+// (`yyyy-MM-ddT00:00:00`, no `Z` and no offset), never an absolute instant.
+// That keeps the calendar date timezone-independent: it can't drift a day when
+// the viewer changes timezone, which storing it as an instant (local-midnight
+// converted to UTC) did. `new Date("…T00:00:00")` parses a zoneless datetime as
+// LOCAL time in every engine, so the existing local-Date display/expansion
+// pipeline keeps rendering the stored wall date verbatim. Timed events are
+// unchanged — they stay absolute instants.
+// ---------------------------------------------------------------------------
+
+/** A `yyyy-MM-dd` wall date -> the floating all-day dtstart we store. */
+export function allDayIso(wallDate: string): string {
+  return `${wallDate}T00:00:00`;
+}
+
+/** A JS Date -> a floating all-day dtstart taking its LOCAL wall date. */
+export function allDayIsoFromDate(d: Date): string {
+  return allDayIso(toDateInput(d));
+}
+
+/**
+ * The `yyyy-MM-dd` wall date of an all-day dtstart/dtend, however it was stored.
+ * New rows are floating, so a plain slice is exact and timezone-independent.
+ * Legacy rows (written before this change) are a `…Z` instant authored as local
+ * midnight, so those are interpreted in local time — the best we can do without
+ * the authoring zone, and identical to how they already displayed.
+ */
+export function allDayWallDate(iso: string): string {
+  return iso.endsWith("Z") ? toDateInput(new Date(iso)) : iso.slice(0, 10);
+}
+
+/** The next calendar day after a `yyyy-MM-dd` wall date (all-day DTEND is
+ *  exclusive). UTC arithmetic keeps it off DST/local-offset entirely. */
+export function nextWallDate(wallDate: string): string {
+  const d = new Date(`${wallDate}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
+
 /** Parsed `yyyy-mm-dd` birthday. `year` is null for a vCard date with no year
  *  (`--05-14`), which is legal and means "we know the day, not the age".
  *  Exported so the People read-only label and the age/next-birthday helpers

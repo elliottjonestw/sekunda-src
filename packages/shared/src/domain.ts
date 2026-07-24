@@ -265,15 +265,23 @@ export type ReminderQuery = z.infer<typeof reminderQuerySchema>;
 // ---------------------------------------------------------------------------
 // Events (iCalendar VEVENT shape). This is the LOCAL ("Sekunda") calendar
 // only — CalDAV calendars are never stored here, so they need no schema.
-// dtstart is a required ISO instant; all_day/rrule/exdates carry the recurrence.
+// dtstart carries the start; all_day/rrule/exdates carry the recurrence.
+//
+// Timed events store an absolute instant; ALL-DAY events store a FLOATING
+// wall-clock datetime (no `Z`, no offset) so the calendar date is
+// timezone-independent — see lib/format.ts allDayIso. `{ local: true }` is what
+// admits that zoneless form; `isoOrNull` (todos/reminders) stays strict because
+// those are always instants.
 // ---------------------------------------------------------------------------
+
+const eventDateTime = z.string().datetime({ offset: true, local: true });
 
 const eventFields = {
   summary: z.string().max(2000),
   description: z.string().max(100_000).nullable(),
   location: z.string().max(2000).nullable(),
-  dtstart: z.string().datetime({ offset: true }),
-  dtend: isoOrNull,
+  dtstart: eventDateTime,
+  dtend: eventDateTime.nullable(),
   all_day: boolInt,
   rrule: z.string().max(2000).nullable(),
   exdates: jsonText,

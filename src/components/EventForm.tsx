@@ -9,7 +9,7 @@ import {
 } from "../lib/calendars";
 import { Button, Modal, CATEGORY_COLORS } from "./ui";
 import { TagEditor, LinksPanel, PeoplePanel, LinkTarget } from "./ItemMeta";
-import { toLocalInput, toDateInput, fromLocalInput } from "../lib/format";
+import { toLocalInput, toDateInput, fromLocalInput, allDayIsoFromDate } from "../lib/format";
 import { describeRrule, RRULE_PRESETS } from "../lib/recurrence";
 
 export default function EventForm({
@@ -90,7 +90,7 @@ export default function EventForm({
       summary: summary.trim() || t("common.untitledParen"),
       description: description || null,
       location: location || null,
-      dtstart: allDay ? new Date(toDateInput(start) + "T00:00:00").toISOString() : start.toISOString(),
+      dtstart: allDay ? allDayIsoFromDate(start) : start.toISOString(),
       dtend: allDay ? null : end.toISOString(),
       all_day: allDay ? 1 : 0,
       rrule: effectiveRrule,

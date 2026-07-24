@@ -11,6 +11,7 @@ import { save, open } from "@tauri-apps/plugin-dialog";
 import { writeTextFile, readTextFile } from "@tauri-apps/plugin-fs";
 import type { EventRow } from "../types";
 import { listEvents, upsertEventWithId, newId, nowIso } from "../db";
+import { allDayIso } from "./format";
 
 function mapStatus(status: string): ICalEventStatus | undefined {
   switch (status?.toUpperCase()) {
@@ -102,8 +103,14 @@ export async function importIcsText(text: string): Promise<number> {
     const rruleProp = ve.getFirstPropertyValue("rrule");
     const rrule = rruleProp ? (rruleProp as any).toString() : null;
 
+    // All-day values are floating wall dates (timezone-independent); timed
+    // values are absolute instants. `isDate` distinguishes them per property.
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const icalIso = (t: any): string =>
+      t?.isDate ? allDayIso(`${t.year}-${pad(t.month)}-${pad(t.day)}`) : t.toJSDate().toISOString();
+
     const exdateProps = ve.getAllProperties("exdate");
-    const exdates = exdateProps.map((p) => (p.getFirstValue() as any).toJSDate().toISOString());
+    const exdates = exdateProps.map((p) => icalIso(p.getFirstValue()));
 
     const categories = ve
       .getAllProperties("categories")
@@ -117,8 +124,8 @@ export async function importIcsText(text: string): Promise<number> {
       summary: ev.summary || i18next.t("common.untitledParen"),
       description: ev.description || null,
       location: ev.location || null,
-      dtstart: ev.startDate ? ev.startDate.toJSDate().toISOString() : nowIso(),
-      dtend: ev.endDate ? ev.endDate.toJSDate().toISOString() : null,
+      dtstart: ev.startDate ? icalIso(ev.startDate) : nowIso(),
+      dtend: ev.endDate ? icalIso(ev.endDate) : null,
       all_day: isAllDay ? 1 : 0,
       rrule,
       exdates: exdates.length ? JSON.stringify(exdates) : null,

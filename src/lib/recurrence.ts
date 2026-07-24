@@ -9,20 +9,12 @@
 import { rrulestr } from "rrule";
 import i18next from "i18next";
 import type { UnifiedEvent, EventOccurrence } from "../types";
+import { exdateMatches } from "./exdate";
 
 function normalizeRule(rrule: string): string {
   return rrule.startsWith("RRULE:") || rrule.startsWith("DTSTART")
     ? rrule
     : `RRULE:${rrule}`;
-}
-
-/** Same calendar day (local) — used to match EXDATEs against occurrences. */
-function sameDay(a: Date, b: Date): boolean {
-  return (
-    a.getFullYear() === b.getFullYear() &&
-    a.getMonth() === b.getMonth() &&
-    a.getDate() === b.getDate()
-  );
 }
 
 /**
@@ -63,7 +55,7 @@ export function expandEvent(
   const occurrences = rule.between(padStart, windowEnd, true);
 
   return occurrences
-    .filter((occStart) => !exdates.some((ex) => sameDay(ex, occStart)))
+    .filter((occStart) => !exdates.some((ex) => exdateMatches(ex, occStart, ev.all_day === 1)))
     .map((occStart) => {
       const occEnd = durationMs ? new Date(occStart.getTime() + durationMs) : null;
       return {

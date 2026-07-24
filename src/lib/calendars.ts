@@ -17,6 +17,7 @@ import {
   addExdate, newId, searchEventRows, matchQuery,
 } from "../db";
 import { expandEvents, nextOccurrenceFrom } from "./recurrence";
+import { allDayIsoFromDate } from "./format";
 import {
   getCalendarSettings, saveCalendarSettings, saveAccountCalendars,
   type CalDavCalendar,
@@ -392,7 +393,13 @@ export async function updateEvent(
   const account = getCalendarSettings().account;
   if (!account) throw new Error("That calendar account is no longer connected.");
   assertWritable(getCalendar(ev.calendarId), ev.calendarId);
-  await updateRemoteEvent(account, { ...ev, ...merged });
+  const { etag } = await updateRemoteEvent(account, { ...ev, ...merged });
+  // Keep the in-memory event current with what we just wrote: the fields AND
+  // the server's fresh ETag. Without this a second write on the same object
+  // (e.g. skipping two occurrences before a reload) sends a pre-write If-Match
+  // and the server answers 412 — a false "changed elsewhere" conflict, the very
+  // thing ETags exist to make trustworthy.
+  Object.assign(ev, merged, { etag });
   invalidateCache();
 }
 
@@ -410,12 +417,14 @@ export async function deleteEvent(ev: UnifiedEvent): Promise<void> {
 
 /** Exclude a single occurrence of a recurring event ("skip this day"). */
 export async function skipOccurrence(ev: UnifiedEvent, occurrence: Date): Promise<void> {
+  // An all-day EXDATE must share DTSTART's floating wall-date value type, or it
+  // won't match the occurrence and the skipped day comes back (RFC 5545).
+  const iso = ev.all_day ? allDayIsoFromDate(occurrence) : occurrence.toISOString();
   if (ev.source === "local") {
-    await addExdate(ev.id, occurrence.toISOString());
+    await addExdate(ev.id, iso);
     return;
   }
   const existing: string[] = ev.exdates ? JSON.parse(ev.exdates) : [];
-  const iso = occurrence.toISOString();
   if (!existing.includes(iso)) existing.push(iso);
   await updateEvent(ev, { exdates: JSON.stringify(existing) });
 }
