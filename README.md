@@ -259,7 +259,7 @@ Connect your iCloud inbox and you get a **Mail page** plus an assistant that can
 
 **The Mail page** (sidebar, only present once an inbox is connected): a mailbox picker, a debounced search box, an unread-only filter, and a message pane. Searching is a network round-trip per query rather than a filter over something already loaded, so the box waits for you to stop typing; opened messages are remembered for as long as the page is, so flicking between two costs nothing. Bodies render as plain text and links are deliberately *not* clickable — a link in an email is the phishing surface, and this webview holds your session. Attachments are listed with their type; opening one is not offered.
 
-**What the assistant can do:** `search_mail` (by free text, sender, subject, date range, or unread), `get_message` (one message in full, plus what was attached), and `list_mailboxes`. Attachments are listed, never opened.
+**What the assistant can do:** `search_mail` (by free text, sender, subject, date range, or unread), `get_message` (one message in full, plus what was attached), and `list_mailboxes`. Attachments are listed, never opened. Each field's words are matched **separately and ANDed**, never as one phrase — IMAP matches a search key as a substring, so "Manda Contact emails" as a single key finds nothing in a mailbox full of mail from Manda Contact. It is the same rule the rest of the app's search follows.
 
 **How it works:**
 

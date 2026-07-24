@@ -904,12 +904,14 @@ const MAIL_TOOLS = [
     function: {
       name: "search_mail",
       description:
-        "Search the user's connected iCloud mail and get back message summaries (subject, sender, date, " +
-        "read/unread). This is the user's real email — read it when they ask about mail, a message, or " +
-        "someone who wrote to them. It searches the SERVER, which matches whole terms in headers and, " +
-        "unevenly, in bodies: there is NO ranking and no fuzzy matching, so results are simply the most " +
-        "RECENT matches. Prefer `from` or `subject` over `query` when you know which you mean. Summaries " +
-        "carry no body text — call get_message when the answer is inside a message.",
+        "Search the user's REAL EMAIL — their connected iCloud inbox — and get back message summaries " +
+        "(subject, sender, date, read/unread). Use this for anything about mail: who emailed them, whether " +
+        "someone replied, what a company sent, unread messages. Do NOT use search_people for that: People is " +
+        "an address book of contacts the user typed in, and most senders are not in it. It searches the " +
+        "SERVER, which has NO ranking and no fuzzy matching, so results are simply the most RECENT matches; " +
+        "each field's words are matched separately and all must appear. Put a sender's name or address in " +
+        "`from` and fall back to `query` if that finds nothing. Summaries carry no body text — call " +
+        "get_message when the answer is inside a message.",
       parameters: {
         type: "object",
         properties: {
@@ -2260,6 +2262,17 @@ const WEB_SEARCH_PROMPT =
 const MAIL_PROMPT =
   "\n\nMail:\n" +
   "- The user has connected their iCloud inbox. search_mail, get_message and list_mailboxes read it live.\n" +
+  "- WHICH TOOL: any question about email, mail, an inbox, a message, or whether somebody wrote, replied, " +
+  "sent or emailed is search_mail. It is NOT search_people — that is their address book, a list of contacts " +
+  "they typed in themselves, and it says nothing about who has emailed them. It is not search_notes either. " +
+  "\"Do I have any emails from Acme\" means search_mail with from: \"Acme\"; a person who has emailed them " +
+  "very often has no contact card at all.\n" +
+  "- The Guidelines above tell you to search the user's own data before answering. Their mail is part of that " +
+  "data. Search it and then answer — never ask \"would you like me to search your inbox?\", and never offer " +
+  "alternative spellings instead of just looking.\n" +
+  "- A name in a mail question is a SENDER, so it goes to `from`. If that comes back empty, try the same " +
+  "words in `query` before concluding anything — `from` matches the sender line only, while `query` also " +
+  "reaches the subject and the body. Only say there is no such mail after BOTH have come back empty.\n" +
   "- It is READ-ONLY. You cannot send, reply, forward, delete, file or mark anything as read. If the user " +
   "asks for any of those, say plainly that you can only read their mail.\n" +
   "- search_mail returns the most RECENT matches, not the best ones — the server has no ranking. Say \"the " +

@@ -1,5 +1,5 @@
 import {
-  ICLOUD_IMAP, MAIL_MAX_RESULTS,
+  ICLOUD_IMAP, MAIL_MAX_RESULTS, queryTerms,
   type ImapMessageResult, type MailCriteria,
 } from "@secondbrain/shared";
 import type { MailAccount, MailFolder } from "../settings";
@@ -32,6 +32,14 @@ function toImapDate(value: string): string | undefined {
 }
 
 export const DEFAULT_MAILBOX = "INBOX";
+
+/** Terms for one IMAP search key, or undefined when there is nothing to match.
+ *  Capped at the 8 the schema allows so a rambling query is trimmed rather than
+ *  rejected outright — a refused search reads to the model as "no mail". */
+function terms(value: string | undefined): string[] | undefined {
+  const list = queryTerms((value ?? "").trim()).slice(0, 8);
+  return list.length > 0 ? list : undefined;
+}
 
 /**
  * The mailboxes on the account, as IMAP reports them.
@@ -92,10 +100,14 @@ export async function searchMail(
   params: MailSearchParams = {},
 ): Promise<{ total: number; truncated: boolean; mailbox: string; results: MailMessageSummary[] }> {
   const mailbox = params.mailbox?.trim() || DEFAULT_MAILBOX;
+  // `queryTerms` is the app's one splitter — the same one the global search bar
+  // and every assistant search tool use. A phrase sent as a single IMAP key
+  // matches as one substring, so "Manda Contact emails" would find nothing in
+  // a mailbox full of mail from "Manda Contact".
   const criteria: MailCriteria = {
-    ...(params.from?.trim() ? { from: params.from.trim() } : {}),
-    ...(params.subject?.trim() ? { subject: params.subject.trim() } : {}),
-    ...(params.query?.trim() ? { text: params.query.trim() } : {}),
+    ...(terms(params.from) ? { from: terms(params.from) } : {}),
+    ...(terms(params.subject) ? { subject: terms(params.subject) } : {}),
+    ...(terms(params.query) ? { text: terms(params.query) } : {}),
     ...(params.since ? { since: toImapDate(params.since) } : {}),
     ...(params.before ? { before: toImapDate(params.before) } : {}),
     ...(params.unseen ? { unseen: true } : {}),

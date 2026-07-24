@@ -311,14 +311,18 @@ function parseFolders(lines: string[]): ImapFolderResult[] {
 function searchArgs(criteria: MailCriteria): { args: Arg[]; nonAscii: boolean } {
   const args: Arg[] = [];
   let nonAscii = false;
-  const term = (key: string, value: string) => {
-    if (!/^[\x00-\x7f]*$/.test(value)) nonAscii = true;
-    args.push(`${key} `, astring(value), " ");
+  // One key per term. Adjacent IMAP search keys are ANDed, so `FROM "Manda"
+  // FROM "Contact"` is "both", which is what a multi-word query means.
+  const terms = (key: string, values: string[] | undefined) => {
+    for (const value of values ?? []) {
+      if (!/^[\x00-\x7f]*$/.test(value)) nonAscii = true;
+      args.push(`${key} `, astring(value), " ");
+    }
   };
-  if (criteria.from) term("FROM", criteria.from);
-  if (criteria.to) term("TO", criteria.to);
-  if (criteria.subject) term("SUBJECT", criteria.subject);
-  if (criteria.text) term("TEXT", criteria.text);
+  terms("FROM", criteria.from);
+  terms("TO", criteria.to);
+  terms("SUBJECT", criteria.subject);
+  terms("TEXT", criteria.text);
   if (criteria.since) args.push(`SINCE ${criteria.since} `);
   if (criteria.before) args.push(`BEFORE ${criteria.before} `);
   if (criteria.unseen) args.push("UNSEEN ");

@@ -71,12 +71,26 @@ const searchTerm = z.string().min(1).max(200).refine((s) => !/[\r\n]/.test(s), "
  */
 const mailboxName = z.string().min(1).max(500).refine((s) => !/[\r\n]/.test(s), "Line breaks are not allowed.");
 
+/**
+ * TERMS, never a phrase — the rule the rest of this codebase already follows.
+ *
+ * IMAP matches a search key as one substring, so `TEXT "Manda Contact emails"`
+ * finds nothing when the message says "Manda Contact", and the assistant then
+ * reports there is no such mail. Splitting into terms and letting IMAP AND them
+ * (adjacent search keys are implicitly ANDed) is the same fix `matchQuery`
+ * applies to every other search in the app, for the same reason.
+ *
+ * Bounded at 8: each term is another key the server has to evaluate, and a
+ * question long enough to need more of them wants a different question.
+ */
+const searchTerms = z.array(searchTerm).min(1).max(8);
+
 export const mailCriteriaSchema = z.object({
-  from: searchTerm.optional(),
-  to: searchTerm.optional(),
-  subject: searchTerm.optional(),
+  from: searchTerms.optional(),
+  to: searchTerms.optional(),
+  subject: searchTerms.optional(),
   /** IMAP TEXT: headers *and* body, as far as the server chooses to index. */
-  text: searchTerm.optional(),
+  text: searchTerms.optional(),
   since: imapDate.optional(),
   before: imapDate.optional(),
   unseen: z.boolean().optional(),

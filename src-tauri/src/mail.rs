@@ -49,10 +49,13 @@ const HEADER_FIELDS: &str = "DATE SUBJECT FROM TO CC REPLY-TO MESSAGE-ID CONTENT
 
 #[derive(Deserialize, Default)]
 pub struct Criteria {
-    from: Option<String>,
-    to: Option<String>,
-    subject: Option<String>,
-    text: Option<String>,
+    // TERMS, never a phrase — see `searchTerms` in packages/shared/src/mail.ts.
+    // IMAP matches a key as one substring, so a multi-word query has to become
+    // several keys, which IMAP then ANDs.
+    from: Option<Vec<String>>,
+    to: Option<Vec<String>>,
+    subject: Option<Vec<String>>,
+    text: Option<Vec<String>>,
     since: Option<String>,
     before: Option<String>,
     unseen: Option<bool>,
@@ -519,20 +522,21 @@ fn search_args(criteria: &Criteria) -> Result<(Vec<Arg>, bool), String> {
     let mut args: Vec<Arg> = Vec::new();
     let mut non_ascii = false;
 
-    for (key, value) in [
+    for (key, values) in [
         ("FROM", &criteria.from),
         ("TO", &criteria.to),
         ("SUBJECT", &criteria.subject),
         ("TEXT", &criteria.text),
     ] {
-        let Some(value) = value else { continue };
-        reject_control(value, "Search terms")?;
-        if !value.is_ascii() {
-            non_ascii = true;
+        for value in values.iter().flatten() {
+            reject_control(value, "Search terms")?;
+            if !value.is_ascii() {
+                non_ascii = true;
+            }
+            args.push(Arg::Text(format!("{} ", key)));
+            args.push(astring(value));
+            args.push(Arg::Text(" ".to_string()));
         }
-        args.push(Arg::Text(format!("{} ", key)));
-        args.push(astring(value));
-        args.push(Arg::Text(" ".to_string()));
     }
     // Dates go into the command unquoted, so they are the one place a criterion
     // could carry command syntax — hence the same shape check the shared schema
@@ -785,8 +789,8 @@ mod tests {
     #[test]
     fn builds_search_arguments() {
         let (args, non_ascii) = search_args(&Criteria {
-            from: Some("alex".into()),
-            subject: Some("台北".into()),
+            from: Some(vec!["alex".into()]),
+            subject: Some(vec!["台北".into()]),
             since: Some("1-Jan-2026".into()),
             unseen: Some(true),
             ..Default::default()
@@ -819,11 +823,11 @@ mod tests {
     fn never_ends_a_search_with_a_separator() {
         for criteria in [
             Criteria { unseen: Some(true), ..Default::default() },
-            Criteria { from: Some("alex".into()), ..Default::default() },
+            Criteria { from: Some(vec!["alex".into()]), ..Default::default() },
             Criteria { since: Some("1-Jan-2026".into()), ..Default::default() },
             // A literal last: the dangling separator is its own arg, and
             // trimming has to remove it rather than leave an empty token.
-            Criteria { subject: Some("台北".into()), ..Default::default() },
+            Criteria { subject: Some(vec!["台北".into()]), ..Default::default() },
             Criteria::default(),
         ] {
             let (args, _) = search_args(&criteria).unwrap();
@@ -841,7 +845,7 @@ mod tests {
     #[test]
     fn refuses_command_injection_through_criteria() {
         let injected = Criteria {
-            subject: Some("x\r\na1 LOGOUT".into()),
+            subject: Some(vec!["x\r\na1 LOGOUT".into()]),
             ..Default::default()
         };
         assert!(search_args(&injected).is_err());
