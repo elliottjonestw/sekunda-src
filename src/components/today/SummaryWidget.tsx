@@ -260,8 +260,9 @@ function Summary({ day, viewingToday, revision }: TodayWidgetProps) {
     );
   }
 
-  // Configured but nothing to say (an empty day) means no card at all rather
-  // than an empty one.
+  // Configured but nothing to say (no items AND no forecast) means no card at
+  // all rather than an empty one. A weather-only day still shows — the briefing
+  // can stand on a forecast.
   if (!summary.show) return null;
 
   return (

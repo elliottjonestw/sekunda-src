@@ -2667,9 +2667,14 @@ export interface DaySummaryInput {
  * to restate it would be a paid request to say what's already on screen.
  */
 export function hasDayContent(input: DaySummaryInput): boolean {
+  // Weather alone is enough: the briefing can stand on a forecast (it calls out
+  // rain, storms, hot/cold days and air quality when those would change what
+  // the user does), so an empty calendar on a sunny day still has something to
+  // say. Without this, adding the assistant key on a quiet day made the card
+  // vanish outright — the setup prompt it replaced had more presence than that.
   return (
     input.events.length > 0 || input.reminders.length > 0 ||
-    input.todos.length > 0 || input.birthdays.length > 0
+    input.todos.length > 0 || input.birthdays.length > 0 || !!input.weather
   );
 }
 
@@ -2731,6 +2736,9 @@ const DAY_SUMMARY_PROMPT =
   "- NEVER use bullet points, lists, headings, tables or bold labels. Prose only.\n" +
   "- Lead with the shape of the day, then what matters most: what's first, what clashes, what's overdue, " +
   "whose birthday it is. Don't recite every item — the tiles below already list them.\n" +
+  "- If there are no events, to-dos, reminders or birthdays, the day is a quiet one: say so in a line, " +
+  "and if weather is given treat it as the day's main thing rather than the usual 'mention only if it " +
+  "matters' rule — a calm forecast is worth a sentence when there is nothing else on.\n" +
   "- Keep times and numbers as readable digits (9:30am, 3 to-dos), never spelled out as words.\n" +
   "- If weather is given, mention it ONLY when it would change what they do — rain or snow, a storm, a " +
   "notably hot or cold day, poor air quality (US AQI over 100), or plans that look outdoor. Prefer the " +
@@ -2743,8 +2751,9 @@ const DAY_SUMMARY_PROMPT =
 /**
  * One-paragraph briefing for the Today page.
  *
- * Callers should check `hasDayContent` first — an empty day has nothing to say
- * and shouldn't cost a request. Throws like any other assistant call; the Today
+ * Callers should check `hasDayContent` first — a day with nothing in it (no
+ * events, tasks, reminders, birthdays or forecast) has nothing to say and
+ * shouldn't cost a request. Throws like any other assistant call; the Today
  * view treats a failure as "no summary" rather than an error banner, since this
  * is an enhancement over tiles that already show the same data.
  */
