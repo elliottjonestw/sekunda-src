@@ -84,6 +84,13 @@ Small, visible, low-risk. Good to ship right after the big one.
   explicit **"Load older"** button, not infinite scroll — each page is a network
   round-trip to Apple, and scroll-triggered fetching would fire them by
   accident. Page size stays 50.
+
+  Paging over a *snapshot* of the uid list is safe against mail arriving
+  mid-session, and that is a property of uids rather than luck: uids ascend with
+  arrival, so a new message is always above the window being paged, never inside
+  it. Offset-based paging is what duplicates and skips rows; this cannot. A
+  message deleted while paging simply comes back missing from `UID FETCH`, which
+  is skipped silently.
 - **Sort by date, not uid (§1.3).** Sorting moves client-side into `searchMail`,
   which already resolves `Date` and `INTERNALDATE`. Uid order is arrival order in
   that mailbox, which is wrong for anything filed or imported.
@@ -98,9 +105,41 @@ Small, visible, low-risk. Good to ship right after the big one.
 - **The read-only marker below `md` (§4).** Currently `hidden md:flex`; make it
   visible on mobile, where the absence of buttons is most confusing.
 
+### Freshness — how new mail arrives
+
+Paging handles going *backwards*; this is the front of the list. It replaces
+the TTL sketched for the cache in Phase 3, and is better than it: a TTL is a
+guess standing in for something the server will tell us exactly.
+
+`STATUS <mailbox> (UIDNEXT MESSAGES UNSEEN)` is one cheap command carrying no
+message data:
+
+- **Unchanged `UIDNEXT` and `MESSAGES`** — the cached list is *provably* current.
+  Serve it, no expiry guessing.
+- **`UIDNEXT` moved** — fetch headers for only the new uids (`UID FETCH <cached>:*`)
+  and prepend them. An arrival costs one small fetch, never a re-search.
+- **Filtered lists** get the same treatment restricted to the new range
+  (`UID SEARCH UID <cached>:* <criteria>`), so we learn whether the new mail
+  matches the current query without redoing the search.
+- **`MESSAGES`** catches deletions elsewhere; **`UNSEEN`** catches
+  read-elsewhere.
+
+**When to check: on mount and on window focus. No timer.** `STATUS` still needs
+a connection and a login, so a poll every N seconds is a login every N seconds
+forever, including while nobody is looking — the same objection that keeps the
+Today summary off a timer. Real push (IMAP `IDLE`) needs a held connection, so
+it is desktop-only and belongs in Phase 5 behind the same measurement gate, if
+at all.
+
+Note for Phase 5: `STATUS` on a mailbox that is *currently selected* is
+discouraged by the RFC. It is correct here only because each op is its own
+one-shot connection. If a connection is ever held open, the equivalent is `NOOP`
+on the selected mailbox and reading the untagged `* n EXISTS` it triggers.
+
 **Verify:** an Archive folder with imported mail orders by send date; a
 non-English folder name renders; "Load older" walks back through a large
-mailbox.
+mailbox; sending yourself a message and refocusing the window shows it without a
+full re-search (observable as one `STATUS` + one small `FETCH`).
 
 ---
 
@@ -122,9 +161,10 @@ cache for free (§2.6), where a cache inside the view would help only the UI.
 
 - Message bodies keyed `account|mailbox|uidvalidity|uid` — immutable content, so
   they can live for the session.
-- Search results keyed `account|mailbox|uidvalidity|criteria`, with a short TTL
-  (~2 min) because new mail arrives. The **refresh button bypasses it entirely**;
-  that is what makes a stale list a non-problem.
+- Search results keyed `account|mailbox|uidvalidity|criteria`, validated by the
+  `STATUS` check from Phase 2 rather than by a TTL — `UIDNEXT`/`MESSAGES` say
+  whether the list is current, which a timer can only guess at. The **refresh
+  button bypasses everything** and re-searches.
 - A `UIDVALIDITY` that differs from the cached one drops every entry for that
   mailbox.
 - Cleared on sign-out and on disconnect, alongside `clearSecrets()`.
