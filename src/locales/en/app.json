@@ -48,7 +48,8 @@
     "reminder": "Reminder",
     "todo": "Todo",
     "note": "Note",
-    "person": "Person"
+    "person": "Person",
+    "email": "Email"
   },
   "meta": {
     "tags": "Tags",
@@ -507,7 +508,9 @@
     "searching": "Searching…",
     "remoteWindow": "Connected calendars searched from {{from}} to {{to}}.",
     "widen": "Search a wider range",
-    "calendarsUnavailable": "Couldn’t reach {{names}} — those results are missing."
+    "calendarsUnavailable": "Couldn’t reach {{names}} — those results are missing.",
+    "mailNote": "Mail results are from your inbox, newest first — the mail server has no ranking.",
+    "mailUnavailable": "Couldn't reach your mail: {{error}}"
   },
   "notes": {
     "newNote": "New note",

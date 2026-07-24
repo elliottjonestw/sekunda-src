@@ -14,6 +14,7 @@ import AssistantPopup from "./components/assistant/AssistantPopup";
 import { useAssistantChat, type UiMessage } from "./components/assistant/useAssistantChat";
 import SettingsView from "./views/SettingsView";
 import type { NavTarget } from "./types";
+import type { MailMessageSummary } from "./lib/mail";
 import { startReminderPoller } from "./lib/notifications";
 import { syncSettingsFromCloud, hasMailAccount, MAIL_ACCOUNT_EVENT } from "./lib/settings";
 import { isAssistantConfigured } from "./lib/secrets";
@@ -61,6 +62,9 @@ export default function App() {
   const [todoTarget, setTodoTarget] = useState<string | null>(null);
   const [reminderTarget, setReminderTarget] = useState<string | null>(null);
   const [personTarget, setPersonTarget] = useState<string | null>(null);
+  // Mail carries the whole summary, not an id — a message has no row to reload
+  // from, so the search result itself is what the reader opens.
+  const [mailTarget, setMailTarget] = useState<MailMessageSummary | null>(null);
   // The assistant conversation lives here, not in AssistantView: clicking an
   // item card navigates away, which would otherwise unmount the chat and lose it.
   const [chatMessages, setChatMessages] = useState<UiMessage[]>([]);
@@ -126,6 +130,7 @@ export default function App() {
     setTodoTarget(target?.todoId ?? null);
     setReminderTarget(target?.reminderId ?? null);
     setPersonTarget(target?.personId ?? null);
+    setMailTarget(target?.mail ?? null);
     setSearch("");
     setView(v);
     setNavOpen(false);
@@ -135,6 +140,7 @@ export default function App() {
   function clearTargets() {
     setNoteTarget(null); setCalTarget(null); setCalTargetStart(null);
     setTodoTarget(null); setReminderTarget(null); setPersonTarget(null);
+    setMailTarget(null);
   }
 
   // No database to open any more — the data lives behind the API, and the
@@ -277,7 +283,7 @@ export default function App() {
         {view === "todos" && <TodosView onChange={bump} initialId={todoTarget ?? undefined} />}
         {view === "notes" && <NotesView onChange={bump} initialId={noteTarget ?? undefined} />}
         {view === "people" && <PeopleView onChange={bump} initialId={personTarget ?? undefined} />}
-        {view === "mail" && <MailView />}
+        {view === "mail" && <MailView target={mailTarget ?? undefined} />}
         {view === "assistant" && (
           <AssistantView
            

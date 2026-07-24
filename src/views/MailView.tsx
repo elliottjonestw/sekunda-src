@@ -46,7 +46,7 @@ function senderLabel(from: MailAddress[]): string {
   return first.name ?? first.address;
 }
 
-export default function MailView() {
+export default function MailView({ target }: { target?: MailMessageSummary }) {
   const { t } = useTranslation();
   const account = getMailSettings().account;
 
@@ -316,6 +316,19 @@ export default function MailView() {
       setLoadingDetail(false);
     }
   }
+
+  // Open a specific message when navigated here with a target — a hit from the
+  // global search bar, which searches the inbox. Only fires once, so it can't
+  // re-open after the user has closed it. The summary carries its own mailbox,
+  // so the list behind the message is put on the right folder too.
+  const opened = useRef(false);
+  useEffect(() => {
+    if (opened.current || !target || !account) return;
+    opened.current = true;
+    if (target.mailbox !== mailbox) setMailbox(target.mailbox);
+    void open(target);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [target]);
 
   // Disconnecting while this view is open. The sidebar entry goes at the same
   // time, so this is only ever seen for the instant before navigation.

@@ -6,6 +6,7 @@
 // against it). Re-exported here since the whole app imports it from "./types".
 export type { ItemType } from "@secondbrain/shared";
 import type { ItemType } from "@secondbrain/shared";
+import type { MailMessageSummary } from "./lib/mail";
 
 /**
  * A pointer to one item, used to render it as a card in the assistant chat.
@@ -41,6 +42,14 @@ export interface NavTarget {
   todoId?: string;
   reminderId?: string;
   personId?: string;
+  /**
+   * A message to open in Mail. Unlike every other target this carries the
+   * summary itself, not an id: mail has no row and no `ItemRef`, so there is
+   * nothing to reload it from — the summary a search already fetched is the
+   * freshest thing there is, and it lets the reader open without a refetch.
+   * `uid` and `mailbox` live inside it.
+   */
+  mail?: MailMessageSummary;
 }
 
 export type GoTo = (view: string, target?: NavTarget) => void;

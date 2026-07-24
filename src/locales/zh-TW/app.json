@@ -48,7 +48,8 @@
     "reminder": "提醒",
     "todo": "待辦",
     "note": "備忘錄",
-    "person": "聯絡人"
+    "person": "聯絡人",
+    "email": "電子郵件"
   },
   "meta": {
     "tags": "標籤",
@@ -504,7 +505,9 @@
     "searching": "搜尋中…",
     "remoteWindow": "已連結的行事曆搜尋範圍為 {{from}} 至 {{to}}。",
     "widen": "擴大搜尋範圍",
-    "calendarsUnavailable": "無法連線至 {{names}}，這些結果並未包含在內。"
+    "calendarsUnavailable": "無法連線至 {{names}}，這些結果並未包含在內。",
+    "mailNote": "郵件結果來自你的收件匣，最新的優先——郵件伺服器沒有相關性排序。",
+    "mailUnavailable": "無法連線至你的郵件：{{error}}"
   },
   "notes": {
     "newNote": "新增備忘錄",
