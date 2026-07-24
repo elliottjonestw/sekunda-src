@@ -37,7 +37,7 @@ import {
   getOpenAiKey, setOpenAiKey, getCalDavPassword, setCalDavPassword,
   getMailPassword, setMailPassword,
 } from "../lib/secrets";
-import { icloudAccount, listFolders } from "../lib/mail";
+import { clearMailCache, icloudAccount, listFolders } from "../lib/mail";
 import { isTauri } from "../lib/platform";
 import { exportBackup, importBackup } from "../lib/backup";
 import { clearAllData, newId } from "../db";
@@ -1463,6 +1463,9 @@ function MailSettingsPane() {
       // from storage rather than off the account — and put back on failure, so
       // a typo can't silently knock out a working connection.
       setMailPassword(password);
+      // Connecting a different account under the same app: nothing remembered
+      // about the old one can be allowed to answer for the new one.
+      clearMailCache();
       const draft = icloudAccount(username);
       const folders = await listFolders(draft);
       saveMailSettings({ account: { ...draft, folders, connectedAt: new Date().toISOString() } });
@@ -1479,6 +1482,10 @@ function MailSettingsPane() {
   function disconnect() {
     if (!window.confirm(t("settings.mail.confirmDisconnect"))) return;
     saveMailSettings({ account: null });
+    // Alongside forgetting the password, and for the same reason. The cache is
+    // in memory, so it has no storage key to scope it away — without this, mail
+    // from a disconnected inbox stays readable until the app is quit.
+    clearMailCache();
     setMailPassword("");
     setPassword("");
     setStatus("");

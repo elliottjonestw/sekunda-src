@@ -348,7 +348,12 @@ async function runOp(conn: ImapConnection, op: MailOp): Promise<MailOpResult> {
   if (op.op === "status") {
     return {
       op: "status",
-      ...parseStatus(await conn.command(["STATUS ", astring(op.mailbox), " (UIDNEXT MESSAGES UNSEEN)"])),
+      // UIDVALIDITY rides along: it is what makes the freshness check able to
+      // say "everything you remember about this mailbox is now meaningless",
+      // which no comparison of counts could ever detect.
+      ...parseStatus(await conn.command([
+        "STATUS ", astring(op.mailbox), " (UIDVALIDITY UIDNEXT MESSAGES UNSEEN)",
+      ])),
     };
   }
 
@@ -358,8 +363,13 @@ async function runOp(conn: ImapConnection, op: MailOp): Promise<MailOpResult> {
   // having paid for a second round trip.
   const examine = parseExamine(await conn.command(["EXAMINE ", astring(op.mailbox)]));
 
-  if (op.op === "fetch") return { op: "fetch", message: await fetchMessage(conn, op.uid) };
-  if (op.op === "headers") return { op: "headers", messages: await fetchHeaders(conn, op.uids) };
+  const uidvalidity = examine.uidvalidity;
+  if (op.op === "fetch") {
+    return { op: "fetch", uidvalidity, message: await fetchMessage(conn, op.uid) };
+  }
+  if (op.op === "headers") {
+    return { op: "headers", uidvalidity, messages: await fetchHeaders(conn, op.uids) };
+  }
 
   const { args, nonAscii } = searchArgs(op.criteria);
   const found = parseUids(await conn.command([
@@ -379,6 +389,7 @@ async function runOp(conn: ImapConnection, op: MailOp): Promise<MailOpResult> {
     op: "search",
     total: found.length,
     truncated: found.length > uids.length,
+    uidvalidity,
     uids,
     uidnext: examine.uidnext,
     exists: examine.exists,

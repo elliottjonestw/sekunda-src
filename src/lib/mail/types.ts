@@ -65,6 +65,17 @@ export interface MailMessageDetail extends MailMessageSummary {
 
 /** What the server says about a mailbox, with no message data in it. */
 export interface MailboxStatus {
+  /**
+   * The number that makes a uid mean anything.
+   *
+   * A uid identifies a message only while this is unchanged; when the server
+   * changes it, uid 991 is a *different message*. So it is part of every cache
+   * key, and a change to it drops everything remembered about that mailbox —
+   * without which the cache would confidently serve the wrong email under the
+   * subject that was clicked. Zero means the server didn't say, which is
+   * treated as "remember nothing", never as a value that compares equal.
+   */
+  uidvalidity: number;
   /** The uid the next arrival will get. Unchanged means nothing new. */
   uidnext: number;
   /** How many messages it holds — catches a deletion elsewhere, which leaves
@@ -96,6 +107,15 @@ export interface MailSearchResult {
   status: MailboxStatus;
   /** The first page, already decoded and sorted newest-first by date. */
   results: MailMessageSummary[];
+  /**
+   * True when this came from memory rather than the network.
+   *
+   * The caller needs it because a cached list is not *validated* — nothing here
+   * knows whether mail arrived since. It is the signal to run the `STATUS`
+   * check, which answers that exactly; a fresh result needs no such check,
+   * having just asked.
+   */
+  cached: boolean;
 }
 
 export interface MailSearchParams {
@@ -114,6 +134,9 @@ export interface MailSearchParams {
   /** Only mail at or above this uid — how a list picks up new arrivals without
    *  asking the server to re-run the whole query. */
   uidMin?: number;
+  /** Skip the cache and re-search. The refresh button, and nothing else — the
+   *  answer is still remembered, this only declines to *read* what was. */
+  refresh?: boolean;
 }
 
 /** Anything that went wrong reaching or reading the mailbox. One class, because

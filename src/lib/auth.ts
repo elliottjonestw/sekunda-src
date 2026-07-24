@@ -7,6 +7,7 @@ import {
 } from "@secondbrain/shared";
 import { apiRequest, ApiError } from "./api";
 import { clearCache } from "./cache";
+import { clearMailCache } from "./mail/cache";
 import { clearSecrets } from "./secrets";
 import { DEFAULT_KDF_PARAMS, deriveKey, newKdfSalt } from "./kdf";
 import {
@@ -192,6 +193,7 @@ export async function deleteAccount(email: string, password: string): Promise<vo
 
   // Before clearAuth — see the note in logout().
   clearSecrets();
+  clearMailCache();
   // The session is gone server-side; clear this device so nothing tries to use
   // a refresh token that now names a user who doesn't exist.
   clearAuth();
@@ -227,6 +229,11 @@ export async function logout(): Promise<void> {
   // walking away from was the gap this closes. Coming back means re-entering
   // them, which is the right price.
   clearSecrets();
+  // Mail is held in memory for the life of the app process, so unlike the
+  // secrets it has no storage key to scope it away — signing out has to say so
+  // explicitly, or a stranger's inbox stays readable to the next person to sign
+  // in on this device without a reload.
+  clearMailCache();
   clearAuth();
   // The response cache persists in IndexedDB across the reload sign-out
   // triggers, so it must be wiped explicitly — otherwise one account's cached

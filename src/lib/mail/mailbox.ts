@@ -3,6 +3,9 @@ import {
   type ImapMessageResult, type MailCriteria,
 } from "@secondbrain/shared";
 import type { MailAccount, MailFolder } from "../settings";
+import {
+  cachedMessage, cachedSearch, noteUidValidity, rememberMessage, rememberSearch,
+} from "./cache";
 import { imapCall } from "./client";
 import {
   attachmentsFromStructure, decodeMailboxName, decodeStandalonePart, decodeWords, header,
@@ -17,10 +20,16 @@ import {
 /**
  * Reading a mailbox, in the app's own vocabulary.
  *
- * Everything here is live: nothing about a message is stored, cached or given
- * an id in this app's namespace, for the same reason remote calendar events
- * aren't. Mail belongs to the mail account; copying it into a second place
- * makes two copies to keep in step and a second place to leak from.
+ * Nothing here is *stored*: no table, no row, no id in this app's namespace,
+ * for the same reason remote calendar events have none. Mail belongs to the
+ * mail account, and copying it into a second place makes two copies to keep in
+ * step and a second place to leak from.
+ *
+ * There is an in-memory cache (`cache.ts`) between these functions and the
+ * network, which is a different thing — it dies with the app process and never
+ * touches disk. It sits *here*, below the views, so that the assistant's
+ * `search_mail` and `get_message` are cached too; a cache inside `MailView`
+ * would have helped the UI and nothing else.
  */
 
 /** IMAP's date syntax is English-only regardless of the user's locale, so the
@@ -131,17 +140,43 @@ export async function searchMail(
   }
 
   const limit = Math.min(Math.max(Math.floor(params.limit ?? 25), 1), MAIL_MAX_RESULTS);
+
+  // The cache key is the criteria as sent, plus the limit — which changes the
+  // answer, so serving the assistant's 25 to the view's 50 would silently drop
+  // half a list. A `uid_min` search is never cached in either direction: it is
+  // "what arrived since", which is a different answer every time it is asked
+  // and is exactly the call that exists to keep a cached list current.
+  const cacheable = criteria.uid_min === undefined;
+  const key = { criteria, limit };
+  if (cacheable && !params.refresh) {
+    const hit = cachedSearch(account.username, mailbox, key);
+    if (hit) return { ...hit, cached: true };
+  }
+
   const result = await imapCall(account, { op: "search", mailbox, criteria, limit });
   if (result.op !== "search") throw new MailError("The mail server answered the wrong question.");
+  // Before storing anything: a changed UIDVALIDITY means every uid we remember
+  // for this mailbox now names a different message.
+  noteUidValidity(account.username, mailbox, result.uidvalidity);
 
-  return {
+  const found: MailSearchResult = {
     total: result.total,
     truncated: result.truncated,
     mailbox,
     uids: result.uids,
-    status: { uidnext: result.uidnext, messages: result.exists, unseen: null },
+    status: {
+      uidvalidity: result.uidvalidity,
+      uidnext: result.uidnext,
+      messages: result.exists,
+      unseen: null,
+    },
     results: byDateDescending(result.messages.map((m) => toSummary(mailbox, m))),
+    cached: false,
   };
+  // Stored even on an explicit refresh — bypassing the cache means not *reading*
+  // it, not declining to learn from the answer.
+  if (cacheable) rememberSearch(account.username, mailbox, result.uidvalidity, key, found);
+  return found;
 }
 
 /**
@@ -163,6 +198,7 @@ export async function loadHeaders(
   if (wanted.length === 0) return [];
   const result = await imapCall(account, { op: "headers", mailbox, uids: wanted });
   if (result.op !== "headers") throw new MailError("The mail server answered the wrong question.");
+  noteUidValidity(account.username, mailbox, result.uidvalidity);
   return byDateDescending(result.messages.map((m) => toSummary(mailbox, m)));
 }
 
@@ -180,7 +216,15 @@ export async function mailboxStatus(
 ): Promise<MailboxStatus> {
   const result = await imapCall(account, { op: "status", mailbox });
   if (result.op !== "status") throw new MailError("The mail server answered the wrong question.");
-  return { uidnext: result.uidnext, messages: result.messages, unseen: result.unseen };
+  // The one check no comparison of counts could make: if this moved, every uid
+  // we are holding names a different message, so everything goes.
+  noteUidValidity(account.username, mailbox, result.uidvalidity);
+  return {
+    uidvalidity: result.uidvalidity,
+    uidnext: result.uidnext,
+    messages: result.messages,
+    unseen: result.unseen,
+  };
 }
 
 /**
@@ -204,6 +248,24 @@ function byDateDescending(messages: MailMessageSummary[]): MailMessageSummary[] 
 const MAX_BODY_CHARS = 20_000;
 
 /**
+ * A message we already have, without asking for it — or undefined.
+ *
+ * Synchronous on purpose, and the reason is a render frame: `getMessage` is
+ * async even on a hit, so a view that awaits it must first show a loading state
+ * and then immediately replace it. That flicker on every click between two
+ * already-read messages is exactly what the cache exists to remove, so the
+ * cache is allowed to be asked a question it can answer without yielding —
+ * the same reason `secrets.ts` reads synchronously.
+ */
+export function peekMessage(
+  account: MailAccount,
+  uid: number,
+  mailbox = DEFAULT_MAILBOX,
+): MailMessageDetail | undefined {
+  return cachedMessage(account.username, mailbox, uid);
+}
+
+/**
  * One message, decoded.
  *
  * The uid is only meaningful inside its mailbox — the same number names a
@@ -222,8 +284,15 @@ export async function getMessage(
   uid: number,
   mailbox = DEFAULT_MAILBOX,
 ): Promise<MailMessageDetail> {
+  // A message body is immutable content: a uid names one set of bytes for as
+  // long as UIDVALIDITY holds, so a hit needs no revalidation at all. What can
+  // go stale is `seen` — a cosmetic dot, on a reader that cannot change a flag.
+  const hit = cachedMessage(account.username, mailbox, uid);
+  if (hit) return hit;
+
   const result = await imapCall(account, { op: "fetch", mailbox, uid });
   if (result.op !== "fetch") throw new MailError("The mail server answered the wrong question.");
+  noteUidValidity(account.username, mailbox, result.uidvalidity);
 
   const msg = result.message;
   const structure = msg.structure ?? [];
@@ -246,7 +315,7 @@ export async function getMessage(
   const flags = msg.flags.map((f) => f.toLowerCase());
   const body = text.length > MAX_BODY_CHARS ? `${text.slice(0, MAX_BODY_CHARS)}…` : text;
 
-  return {
+  const detail: MailMessageDetail = {
     uid: msg.uid,
     mailbox,
     subject: decodeSubject(header(headers, "subject")),
@@ -263,6 +332,8 @@ export async function getMessage(
     body_truncated: !!msg.truncated || text.length > MAX_BODY_CHARS,
     attachments,
   };
+  rememberMessage(account.username, mailbox, result.uidvalidity, detail);
+  return detail;
 }
 
 /** A connectable account for the one provider this supports. The host and port

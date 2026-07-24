@@ -3,7 +3,7 @@ import { ArrowLeft, Inbox, Lock, Paperclip, RefreshCw, MailOpen } from "lucide-r
 import { useTranslation } from "react-i18next";
 import { getMailSettings, saveMailSettings, type MailFolder } from "../lib/settings";
 import {
-  DEFAULT_MAILBOX, getMessage, listFolders, loadHeaders, mailboxStatus, searchMail,
+  DEFAULT_MAILBOX, getMessage, listFolders, loadHeaders, mailboxStatus, peekMessage, searchMail,
   type MailAddress, type MailboxStatus, type MailMessageDetail, type MailMessageSummary,
 } from "../lib/mail";
 import { fmtBytes, fmtDateTime } from "../lib/format";
@@ -77,10 +77,7 @@ export default function MailView() {
   const [detail, setDetail] = useState<MailMessageDetail | null>(null);
   const [detailError, setDetailError] = useState("");
   const [loadingDetail, setLoadingDetail] = useState(false);
-  // Keyed by mailbox|uid — a uid means nothing on its own, and the mailbox can
-  // change underneath it. Lives for the life of the view, not the session, so a
-  // long-open reader can't accumulate an inbox in memory.
-  const opened = useRef(new Map<string, MailMessageDetail>());
+  const [refreshing, setRefreshing] = useState(false);
 
   // The typed query only becomes the searched one after it settles.
   useEffect(() => {
@@ -88,18 +85,23 @@ export default function MailView() {
     return () => clearTimeout(id);
   }, [typed]);
 
-  const load = async () => {
+  const load = async (refresh = false) => {
     if (!account) return;
     setError("");
     try {
       const found = await searchMail(account, {
-        mailbox, query: query || undefined, unseen: unreadOnly, limit: PAGE_SIZE,
+        mailbox, query: query || undefined, unseen: unreadOnly, limit: PAGE_SIZE, refresh,
       });
       setMessages(found.results);
       setUids(found.uids);
       setTotal(found.total);
       setTruncated(found.truncated);
       status.current = { ...found.status, key: filterKey };
+      // A cached list is not a validated one — nothing about serving it from
+      // memory knows whether mail arrived since. So the STATUS check runs, and
+      // runs only here: a result that just came off the network has, by
+      // definition, already asked.
+      if (found.cached) void checkForNewMail();
     } catch (e) {
       // Held in the view rather than thrown at the gate: a failed *filter*
       // should not replace a list that is already on screen with an error page.
@@ -161,6 +163,16 @@ export default function MailView() {
       // answer is about a mailbox nobody is looking at any more.
       if (status.current?.key !== previous.key) return;
       status.current = { ...now, key: filterKey };
+
+      // UIDVALIDITY moved: every uid on this screen now names a *different*
+      // message, so the list is not stale, it is meaningless. `mailboxStatus`
+      // has already dropped the cache for this mailbox; this re-searches into
+      // the empty space that leaves. No comparison of counts could detect it,
+      // which is the whole reason it is plumbed through the executors.
+      if (previous.uidvalidity && now.uidvalidity && now.uidvalidity !== previous.uidvalidity) {
+        await load();
+        return;
+      }
 
       if (now.uidnext === previous.uidnext && now.messages === previous.messages) {
         // Provably current, including the unread dots — unless something was
@@ -235,18 +247,39 @@ export default function MailView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  /**
+   * The refresh button, which bypasses the cache rather than merely re-running
+   * the load.
+   *
+   * Without the bypass it would re-serve exactly what is already on screen,
+   * which is the one thing a refresh button must not do. It is also the only
+   * escape hatch from a freshness check that is wrong for any reason we didn't
+   * anticipate, so it goes all the way to the server every time.
+   */
+  async function hardRefresh() {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      await load(true);
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
   async function open(summary: MailMessageSummary) {
     setSelected(summary);
     setDetailError("");
-    const key = `${summary.mailbox}|${summary.uid}`;
-    const cached = opened.current.get(key);
-    if (cached) { setDetail(cached); return; }
+    // Asked synchronously, because `getMessage` is async even on a hit: showing
+    // a loading state and replacing it in the next tick is a flicker on every
+    // click between two already-read messages. The view keeps no cache of its
+    // own any more — that one helped only this page, where `cache.ts` behind
+    // `mailbox.ts` also serves the assistant.
+    const held = peekMessage(account!, summary.uid, summary.mailbox);
+    if (held) { setDetail(held); return; }
     setDetail(null);
     setLoadingDetail(true);
     try {
-      const full = await getMessage(account!, summary.uid, summary.mailbox);
-      opened.current.set(key, full);
-      setDetail(full);
+      setDetail(await getMessage(account!, summary.uid, summary.mailbox));
     } catch (e) {
       setDetailError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -292,12 +325,13 @@ export default function MailView() {
               {picker.map((f) => <option key={f.name} value={f.name}>{f.label ?? f.name}</option>)}
             </select>
             <button
-              onClick={gate.retry}
+              onClick={() => void hardRefresh()}
+              disabled={refreshing}
               title={t("mail.refresh")}
               aria-label={t("mail.refresh")}
-              className="shrink-0 rounded-lg border border-neutral-200 p-2 text-neutral-500 hover:bg-neutral-50 dark:border-neutral-600 dark:hover:bg-neutral-800"
+              className="shrink-0 rounded-lg border border-neutral-200 p-2 text-neutral-500 hover:bg-neutral-50 disabled:opacity-50 dark:border-neutral-600 dark:hover:bg-neutral-800"
             >
-              <RefreshCw size={15} />
+              <RefreshCw size={15} className={refreshing ? "animate-spin" : undefined} />
             </button>
           </div>
           <input

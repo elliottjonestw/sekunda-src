@@ -199,18 +199,24 @@ pub enum OpResult {
         /// did. Zero when the server didn't volunteer them.
         uidnext: u32,
         exists: u32,
+        /// A uid means nothing without this — see `MailOpResult` in
+        /// packages/shared/src/mail.ts.
+        uidvalidity: u32,
         /// Headers for the first page of `uids`.
         messages: Vec<Message>,
     },
     Headers {
+        uidvalidity: u32,
         messages: Vec<Message>,
     },
     Status {
+        uidvalidity: u32,
         uidnext: u32,
         messages: u32,
         unseen: u32,
     },
     Fetch {
+        uidvalidity: u32,
         message: Message,
     },
 }
@@ -740,12 +746,16 @@ fn parse_folders(lines: &[String]) -> Vec<Folder> {
 /// EXAMINE's `* OK [UNSEEN n]` is deliberately NOT read: it is the sequence
 /// number of the first unseen message, not a count, and treating it as one
 /// gives a number that looks plausible and is wrong.
-fn parse_examine(lines: &[String]) -> (u32, u32) {
-    let (mut uidnext, mut exists) = (0u32, 0u32);
+fn parse_examine(lines: &[String]) -> (u32, u32, u32) {
+    let (mut uidnext, mut exists, mut uidvalidity) = (0u32, 0u32, 0u32);
     for line in lines {
         if let Some(rest) = strip_ci(line, "* OK [UIDNEXT ") {
             if let Some(end) = rest.find(']') {
                 uidnext = rest[..end].trim().parse().unwrap_or(uidnext);
+            }
+        } else if let Some(rest) = strip_ci(line, "* OK [UIDVALIDITY ") {
+            if let Some(end) = rest.find(']') {
+                uidvalidity = rest[..end].trim().parse().unwrap_or(uidvalidity);
             }
         } else if let Some(rest) = strip_ci(line, "* ") {
             if let Some(n) = rest.strip_suffix(" EXISTS").or_else(|| rest.strip_suffix(" exists")) {
@@ -753,7 +763,7 @@ fn parse_examine(lines: &[String]) -> (u32, u32) {
             }
         }
     }
-    (uidnext, exists)
+    (uidnext, exists, uidvalidity)
 }
 
 /// `strip_prefix`, case-insensitively on the prefix — IMAP keywords are
@@ -772,8 +782,8 @@ fn strip_ci<'a>(line: &'a str, prefix: &str) -> Option<&'a str> {
 /// than matched: it comes back in the server's own quoting and its own modified
 /// UTF-7, so comparing it to what we sent is a way to reject a correct answer.
 /// There is only ever one STATUS in flight, so the pairs are what matter.
-fn parse_status(lines: &[String]) -> (u32, u32, u32) {
-    let (mut uidnext, mut messages, mut unseen) = (0u32, 0u32, 0u32);
+fn parse_status(lines: &[String]) -> (u32, u32, u32, u32) {
+    let (mut uidnext, mut messages, mut unseen, mut uidvalidity) = (0u32, 0u32, 0u32, 0u32);
     for line in lines {
         let chars: Vec<char> = line.chars().collect();
         let (items, _) = parse_tokens(&chars, 0);
@@ -791,13 +801,14 @@ fn parse_status(lines: &[String]) -> (u32, u32, u32) {
                     "UIDNEXT" => uidnext = value,
                     "MESSAGES" => messages = value,
                     "UNSEEN" => unseen = value,
+                    "UIDVALIDITY" => uidvalidity = value,
                     _ => {}
                 }
             }
             i += 2;
         }
     }
-    (uidnext, messages, unseen)
+    (uidnext, messages, unseen, uidvalidity)
 }
 
 fn parse_uids(lines: &[String]) -> Vec<u32> {
@@ -1051,18 +1062,24 @@ async fn run_op(conn: &mut Conn, op: &MailOp) -> Result<OpResult, String> {
                 .command(&[
                     Arg::Text("STATUS ".into()),
                     astring(mailbox),
-                    Arg::Text(" (UIDNEXT MESSAGES UNSEEN)".into()),
+                    // UIDVALIDITY rides along: it is what makes the freshness
+                    // check able to say "everything you remember about this
+                    // mailbox is now meaningless", which no comparison of
+                    // counts could ever detect.
+                    Arg::Text(" (UIDVALIDITY UIDNEXT MESSAGES UNSEEN)".into()),
                 ])
                 .await?;
-            let (uidnext, messages, unseen) = parse_status(&lines);
-            Ok(OpResult::Status { uidnext, messages, unseen })
+            let (uidnext, messages, unseen, uidvalidity) = parse_status(&lines);
+            Ok(OpResult::Status { uidvalidity, uidnext, messages, unseen })
         }
 
         MailOp::Headers { mailbox, uids, .. } => {
             reject_control(mailbox, "Mailbox names")?;
-            conn.command(&[Arg::Text("EXAMINE ".into()), astring(mailbox)]).await?;
+            let (.., uidvalidity) =
+                parse_examine(&conn.command(&[Arg::Text("EXAMINE ".into()), astring(mailbox)]).await?);
             let wanted: Vec<u32> = uids.iter().copied().filter(|u| *u > 0).take(MAX_RESULTS).collect();
             Ok(OpResult::Headers {
+                uidvalidity,
                 messages: fetch_headers(conn, &wanted).await?,
             })
         }
@@ -1070,8 +1087,10 @@ async fn run_op(conn: &mut Conn, op: &MailOp) -> Result<OpResult, String> {
         MailOp::Fetch { mailbox, uid, .. } => {
             reject_control(mailbox, "Mailbox names")?;
             // EXAMINE, not SELECT: read-only at the protocol level.
-            conn.command(&[Arg::Text("EXAMINE ".into()), astring(mailbox)]).await?;
+            let (.., uidvalidity) =
+                parse_examine(&conn.command(&[Arg::Text("EXAMINE ".into()), astring(mailbox)]).await?);
             Ok(OpResult::Fetch {
+                uidvalidity,
                 message: fetch_message(conn, *uid).await?,
             })
         }
@@ -1086,7 +1105,7 @@ async fn run_op(conn: &mut Conn, op: &MailOp) -> Result<OpResult, String> {
             // EXAMINE also volunteers UIDNEXT and EXISTS, which is the
             // freshness baseline for free: a later STATUS can be compared
             // against it without this call paying for a second round trip.
-            let (uidnext, exists) =
+            let (uidnext, exists, uidvalidity) =
                 parse_examine(&conn.command(&[Arg::Text("EXAMINE ".into()), astring(mailbox)]).await?);
 
             let (criteria_args, non_ascii) = search_args(criteria)?;
@@ -1112,6 +1131,7 @@ async fn run_op(conn: &mut Conn, op: &MailOp) -> Result<OpResult, String> {
                 truncated: found.len() > uids.len(),
                 uidnext,
                 exists,
+                uidvalidity,
                 messages: fetch_headers(conn, &page).await?,
                 uids,
             })
@@ -1282,7 +1302,7 @@ mod tests {
 
     #[test]
     fn reads_the_freshness_baseline_off_examine() {
-        let (uidnext, exists) = parse_examine(&[
+        let (uidnext, exists, uidvalidity) = parse_examine(&[
             "* FLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft)".to_string(),
             "* 1204 EXISTS".to_string(),
             "* 0 RECENT".to_string(),
@@ -1294,22 +1314,23 @@ mod tests {
             // number, so it is not read at all.
             "* OK [UNSEEN 1198] First unseen".to_string(),
         ]);
-        assert_eq!((uidnext, exists), (9931, 1204));
-        assert_eq!(parse_examine(&["* OK [READ-ONLY]".to_string()]), (0, 0));
+        assert_eq!((uidnext, exists, uidvalidity), (9931, 1204, 1_517_159_100));
+        assert_eq!(parse_examine(&["* OK [READ-ONLY]".to_string()]), (0, 0, 0));
     }
 
     #[test]
     fn reads_a_status_response() {
-        let (uidnext, messages, unseen) =
-            parse_status(&["* STATUS \"INBOX\" (MESSAGES 1204 UIDNEXT 9931 UNSEEN 3)".to_string()]);
-        assert_eq!((uidnext, messages, unseen), (9931, 1204, 3));
+        let (uidnext, messages, unseen, uidvalidity) = parse_status(&[
+            "* STATUS \"INBOX\" (MESSAGES 1204 UIDNEXT 9931 UNSEEN 3 UIDVALIDITY 1517159100)".to_string(),
+        ]);
+        assert_eq!((uidnext, messages, unseen, uidvalidity), (9931, 1204, 3, 1_517_159_100));
 
         // A non-ASCII mailbox name comes back in the server's own modified
         // UTF-7 and its own quoting — matching it against what we sent is a way
         // to reject a correct answer, so the name is skipped, not compared.
         let (uidnext, ..) = parse_status(&["* STATUS \"&ZeVnLIqe-\" (UIDNEXT 42)".to_string()]);
         assert_eq!(uidnext, 42);
-        assert_eq!(parse_status(&["a1 OK done".to_string()]), (0, 0, 0));
+        assert_eq!(parse_status(&["a1 OK done".to_string()]), (0, 0, 0, 0));
     }
 
     /// The bug that made every filtered search fail against iCloud: each term

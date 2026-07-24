@@ -280,10 +280,24 @@ export interface ImapMessageResult {
   truncated?: boolean;
 }
 
+/**
+ * `UIDVALIDITY`, on every result that opened a mailbox.
+ *
+ * A uid means nothing on its own: it identifies a message only while this
+ * number is unchanged, and the server is entitled to change it whenever it
+ * cannot guarantee the old uids still mean what they meant. When it does, uid
+ * 991 is simply a *different message* — so anything remembering a uid across
+ * calls (a cache, a page of results, an open message) has to be keyed by it or
+ * it will confidently show the wrong email under the subject that was clicked.
+ *
+ * Zero when the server didn't say, which callers must treat as "don't remember
+ * anything", not as a value that happens to compare equal.
+ */
 export type MailOpResult =
   | { op: "list"; folders: ImapFolderResult[] }
   | {
       op: "search";
+      uidvalidity: number;
       /** How many matched in all, before any cap. */
       total: number;
       /** True when `total` exceeded MAIL_MAX_UIDS, so not even the uid list is
@@ -305,9 +319,10 @@ export type MailOpResult =
       /** Headers for the first page of `uids`. */
       messages: ImapMessageResult[];
     }
-  | { op: "headers"; messages: ImapMessageResult[] }
+  | { op: "headers"; uidvalidity: number; messages: ImapMessageResult[] }
   | {
       op: "status";
+      uidvalidity: number;
       /** The uid the next arrival will get. Unchanged means nothing new. */
       uidnext: number;
       /** How many messages the mailbox holds. Catches deletions elsewhere,
@@ -316,4 +331,4 @@ export type MailOpResult =
       /** Catches read-elsewhere, which moves neither of the other two. */
       unseen: number;
     }
-  | { op: "fetch"; message: ImapMessageResult };
+  | { op: "fetch"; uidvalidity: number; message: ImapMessageResult };

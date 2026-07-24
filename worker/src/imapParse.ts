@@ -279,13 +279,15 @@ export function parseFolders(lines: string[]): ImapFolderResult[] {
  * number of the first unseen message, not a count, and treating it as one gives
  * a number that looks plausible and is wrong.
  */
-export function parseExamine(lines: string[]): { uidnext: number; exists: number } {
-  const out = { uidnext: 0, exists: 0 };
+export function parseExamine(lines: string[]): { uidnext: number; exists: number; uidvalidity: number } {
+  const out = { uidnext: 0, exists: 0, uidvalidity: 0 };
   for (const line of lines) {
     const uidnext = /^\* OK \[UIDNEXT (\d+)\]/i.exec(line);
     if (uidnext) out.uidnext = Number(uidnext[1]);
     const exists = /^\* (\d+) EXISTS\b/i.exec(line);
     if (exists) out.exists = Number(exists[1]);
+    const validity = /^\* OK \[UIDVALIDITY (\d+)\]/i.exec(line);
+    if (validity) out.uidvalidity = Number(validity[1]);
   }
   return out;
 }
@@ -298,8 +300,10 @@ export function parseExamine(lines: string[]): { uidnext: number; exists: number
  * UTF-7, so comparing it to what we sent is a way to reject a correct answer.
  * There is only ever one STATUS in flight, so the pairs are what matter.
  */
-export function parseStatus(lines: string[]): { uidnext: number; messages: number; unseen: number } {
-  const out = { uidnext: 0, messages: 0, unseen: 0 };
+export function parseStatus(
+  lines: string[],
+): { uidnext: number; messages: number; unseen: number; uidvalidity: number } {
+  const out = { uidnext: 0, messages: 0, unseen: 0, uidvalidity: 0 };
   for (const line of lines) {
     const { items } = parseTokens(line, 0);
     if (str(items[0]) !== "*" || str(items[1]).toUpperCase() !== "STATUS") continue;
@@ -312,6 +316,7 @@ export function parseStatus(lines: string[]): { uidnext: number; messages: numbe
       if (key === "UIDNEXT") out.uidnext = value;
       else if (key === "MESSAGES") out.messages = value;
       else if (key === "UNSEEN") out.unseen = value;
+      else if (key === "UIDVALIDITY") out.uidvalidity = value;
     }
   }
   return out;

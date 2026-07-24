@@ -149,19 +149,19 @@ test("EXAMINE volunteers the freshness baseline for free", () => {
     // Reading it as a count gives a plausible wrong number.
     "* OK [UNSEEN 1198] First unseen",
   ]);
-  assert.deepEqual(seen, { uidnext: 9931, exists: 1204 });
-  assert.deepEqual(parseExamine(["* OK [READ-ONLY]"]), { uidnext: 0, exists: 0 });
+  assert.deepEqual(seen, { uidnext: 9931, exists: 1204, uidvalidity: 1_517_159_100 });
+  assert.deepEqual(parseExamine(["* OK [READ-ONLY]"]), { uidnext: 0, exists: 0, uidvalidity: 0 });
 });
 
 test("STATUS is read by its pairs, not by its mailbox name", () => {
   assert.deepEqual(
-    parseStatus(['* STATUS "INBOX" (MESSAGES 1204 UIDNEXT 9931 UNSEEN 3)']),
-    { uidnext: 9931, messages: 1204, unseen: 3 },
+    parseStatus(['* STATUS "INBOX" (MESSAGES 1204 UIDNEXT 9931 UNSEEN 3 UIDVALIDITY 1517159100)']),
+    { uidnext: 9931, messages: 1204, unseen: 3, uidvalidity: 1_517_159_100 },
   );
   // A non-ASCII mailbox comes back in the server's own modified UTF-7 and its
   // own quoting, so matching it against what we sent rejects a correct answer.
   assert.equal(parseStatus(['* STATUS "&ZeVnLIqe-" (UIDNEXT 42)']).uidnext, 42);
-  assert.deepEqual(parseStatus(["a1 OK done"]), { uidnext: 0, messages: 0, unseen: 0 });
+  assert.deepEqual(parseStatus(["a1 OK done"]), { uidnext: 0, messages: 0, unseen: 0, uidvalidity: 0 });
 });
 
 test("junk in, empty out — a structure we cannot read is not a crash", () => {
