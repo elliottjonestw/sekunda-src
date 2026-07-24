@@ -38,11 +38,16 @@ export interface MailAttachment {
    * structure. Null on the small-message path, where the list is reconstructed
    * from the bytes and there is no numbering to read.
    *
-   * Nothing uses it yet: there is no download path. It is here because the part
-   * number is the *only* thing that would make one possible, and it costs
-   * nothing to carry.
+   * A null part cannot be downloaded — there is nothing to ask the server for.
+   * In practice it is only null when the server described the message in a way
+   * the structure parser could not read, since the structure is requested on
+   * both fetch paths.
    */
   part: string | null;
+  /** The part's transfer encoding (`base64`, `quoted-printable`, `7bit`), which
+   *  is what turns the downloaded bytes back into a file. Comes off the
+   *  structure, because at download time there are no part headers in hand. */
+  encoding: string;
   filename: string | null;
   content_type: string;
   /** Bytes as encoded on the wire; absent when the part gave no length. */
@@ -59,7 +64,8 @@ export interface MailMessageDetail extends MailMessageSummary {
   body: string;
   /** True when the body was cut — by the fetch's octet cap or by ours. */
   body_truncated: boolean;
-  /** Listed, never downloaded. There is no attachment fetch path. */
+  /** Listed, and downloadable one at a time on demand — nothing is fetched
+   *  until it is asked for. Still a read: see `saveAttachment`. */
   attachments: MailAttachment[];
 }
 

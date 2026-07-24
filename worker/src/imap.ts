@@ -1,5 +1,6 @@
 import { connect } from "cloudflare:sockets";
 import {
+  MAIL_MAX_ATTACHMENT_WIRE_BYTES,
   MAIL_MAX_BODY_BYTES,
   MAIL_MAX_UIDS,
   MAIL_SMALL_MESSAGE_BYTES,
@@ -44,12 +45,28 @@ export { ImapError };
  *     it, and one round-trip on a rare path is not worth the branch.
  */
 
-/** Whole-conversation deadline. A stalled socket must not hold a Worker
- *  request open until the platform kills it with no explanation. */
+/**
+ * Whole-conversation deadline. A stalled socket must not hold a Worker request
+ * open until the platform kills it with no explanation.
+ *
+ * Downloading an attachment gets longer, because it is the one op whose time is
+ * spent on bytes rather than on latency: 14 MB over a slow connection does not
+ * finish in twenty seconds, and a working download that reports "the mail
+ * server took too long" is the worst of both. It is still bounded, and bounded
+ * by the same thing — a deadline, not a hope.
+ */
 const DEADLINE_MS = 20_000;
+const PART_DEADLINE_MS = 60_000;
 
-/** A single response line, literals included. Guards against a hostile or
- *  broken server streaming unbounded data into memory. */
+/**
+ * A single response line, literals included. Guards against a hostile or broken
+ * server streaming unbounded data into memory.
+ *
+ * Per-connection rather than global, because the attachment op needs a ceiling
+ * forty times higher than everything else and lowering the guard for every
+ * response to suit one of them would be the wrong trade. `runOp` raises it, for
+ * that op only.
+ */
 const MAX_RESPONSE_BYTES = MAIL_MAX_BODY_BYTES + 65_536;
 
 /** Header block per message in a search. Real headers are 2–8 KB; a chain of
@@ -101,6 +118,8 @@ function astring(value: string): Arg {
 class ImapConnection {
   private buf = new Uint8Array(0);
   private tag = 0;
+  /** Raised for the attachment op and nothing else — see MAX_RESPONSE_BYTES. */
+  maxResponse = MAX_RESPONSE_BYTES;
 
   constructor(
     private readonly reader: ReadableStreamDefaultReader<Uint8Array>,
@@ -125,7 +144,7 @@ class ImapConnection {
           return line;
         }
       }
-      if (this.buf.length > MAX_RESPONSE_BYTES) {
+      if (this.buf.length > this.maxResponse) {
         throw new ImapError("The mail server sent more data than we will read.");
       }
       await this.fill();
@@ -147,7 +166,7 @@ class ImapConnection {
       const m = /\{(\d+)\}$/.exec(out);
       if (!m) return out;
       const n = Number(m[1]);
-      if (n > MAX_RESPONSE_BYTES || out.length + n > MAX_RESPONSE_BYTES) {
+      if (n > this.maxResponse || out.length + n > this.maxResponse) {
         throw new ImapError("The mail server sent more data than we will read.");
       }
       out += (await this.readBytes(n)) + (await this.readLine());
@@ -371,6 +390,25 @@ async function runOp(conn: ImapConnection, op: MailOp): Promise<MailOpResult> {
     return { op: "headers", uidvalidity, messages: await fetchHeaders(conn, op.uids) };
   }
 
+  if (op.op === "part") {
+    // The one op allowed to read megabytes, and only after the part number has
+    // been re-checked: it is interpolated into `BODY.PEEK[…]`, where IMAP has
+    // no quoted form to hide behind the way a search term does.
+    if (!/^[1-9][0-9]*(\.[1-9][0-9]*)*$/.test(op.part)) {
+      throw new ImapError("That is not a part of this message.");
+    }
+    conn.maxResponse = MAIL_MAX_ATTACHMENT_WIRE_BYTES + 65_536;
+    const fetched = parseFetch(await conn.command([
+      `UID FETCH ${op.uid} (UID BODY.PEEK[${op.part}]<0.${MAIL_MAX_ATTACHMENT_WIRE_BYTES}>)`,
+    ]))[0];
+    if (!fetched) throw new ImapError("That message no longer exists.");
+    const body = fetched.partBody ?? "";
+    // Bounded by the protocol, so hitting the cap is reported rather than
+    // silently handed over: a file cut short is a corrupted file that looks
+    // like a saved one, and the client refuses to write it.
+    return { op: "part", uidvalidity, body, truncated: body.length >= MAIL_MAX_ATTACHMENT_WIRE_BYTES };
+  }
+
   const { args, nonAscii } = searchArgs(op.criteria);
   const found = parseUids(await conn.command([
     "UID SEARCH ",
@@ -418,7 +456,7 @@ export async function runImapOp(op: MailOp): Promise<MailOpResult> {
   const deadline = new Promise<never>((_, reject) => {
     timer = setTimeout(
       () => reject(new ImapError("The mail server took too long to answer.", "network")),
-      DEADLINE_MS,
+      op.op === "part" ? PART_DEADLINE_MS : DEADLINE_MS,
     );
   });
 

@@ -34,7 +34,8 @@ export type MailRequest =
   | { op: "search"; mailbox: string; criteria: MailCriteria; limit: number }
   | { op: "headers"; mailbox: string; uids: number[] }
   | { op: "status"; mailbox: string }
-  | { op: "fetch"; mailbox: string; uid: number };
+  | { op: "fetch"; mailbox: string; uid: number }
+  | { op: "part"; mailbox: string; uid: number; part: string };
 
 export async function imapCall(account: MailAccount, request: MailRequest): Promise<MailOpResult> {
   const password = getMailPassword();

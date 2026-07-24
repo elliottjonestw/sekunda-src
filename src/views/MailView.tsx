@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, Inbox, Lock, Paperclip, RefreshCw, MailOpen } from "lucide-react";
+import { ArrowLeft, Download, Inbox, Loader2, Lock, Paperclip, RefreshCw, MailOpen } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { MAIL_MAX_ATTACHMENT_BYTES } from "@secondbrain/shared";
 import { getMailSettings, saveMailSettings, type MailFolder } from "../lib/settings";
 import {
-  DEFAULT_MAILBOX, getMessage, listFolders, loadHeaders, mailboxStatus, peekMessage, searchMail,
-  type MailAddress, type MailboxStatus, type MailMessageDetail, type MailMessageSummary,
+  DEFAULT_MAILBOX, getMessage, listFolders, loadHeaders, mailboxStatus, peekMessage,
+  saveAttachment, searchMail,
+  type MailAddress, type MailAttachment, type MailboxStatus, type MailMessageDetail,
+  type MailMessageSummary,
 } from "../lib/mail";
 import { fmtBytes, fmtDateTime } from "../lib/format";
 import { Button } from "../components/ui";
@@ -78,6 +81,11 @@ export default function MailView() {
   const [detailError, setDetailError] = useState("");
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  /** The part number currently downloading, or "" — one at a time, because the
+   *  op is a login and a multi-megabyte read and firing several is a way to
+   *  spend a rate-limit budget by double-clicking. */
+  const [downloading, setDownloading] = useState("");
+  const [downloadError, setDownloadError] = useState("");
 
   // The typed query only becomes the searched one after it settles.
   useEffect(() => {
@@ -266,9 +274,31 @@ export default function MailView() {
     }
   }
 
+  /**
+   * Fetch one attachment and hand it to the platform's save path.
+   *
+   * The refusals — no part number, too large, truncated — live in
+   * `saveAttachment` rather than here, so the assistant would get them too if it
+   * ever gained this (it does not: a tool that pulls 10 MB into a chat turn has
+   * no use for bytes it cannot read).
+   */
+  async function download(message: MailMessageDetail, attachment: MailAttachment, id: string) {
+    if (downloading) return;
+    setDownloading(id);
+    setDownloadError("");
+    try {
+      await saveAttachment(account!, message.mailbox, message.uid, attachment);
+    } catch (e) {
+      setDownloadError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDownloading("");
+    }
+  }
+
   async function open(summary: MailMessageSummary) {
     setSelected(summary);
     setDetailError("");
+    setDownloadError("");
     // Asked synchronously, because `getMessage` is async even on a hit: showing
     // a loading state and replacing it in the next tick is a flicker on every
     // click between two already-read messages. The view keeps no cache of its
@@ -447,24 +477,40 @@ export default function MailView() {
               <>
                 {detail.attachments.length > 0 && (
                   <div className="mb-4 flex flex-wrap gap-2">
-                    {detail.attachments.map((a, i) => (
-                      <span
-                        key={`${a.filename ?? "part"}-${i}`}
-                        title={a.content_type}
-                        className="flex items-center gap-1.5 rounded-lg bg-neutral-100 px-2.5 py-1 text-xs text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400"
-                      >
-                        <Paperclip size={12} className="shrink-0" />
-                        {a.filename ?? a.content_type}
-                        {/* The size is the server's own count, off BODYSTRUCTURE
-                            — not "however much of the part survived the fetch",
-                            which is what it used to be and was wrong precisely
-                            when the attachment was big enough to care about. */}
-                        {a.size !== null && (
-                          <span className="text-neutral-400 dark:text-neutral-500">{fmtBytes(a.size)}</span>
-                        )}
-                      </span>
-                    ))}
+                    {/* Buttons, but nothing is fetched until one is clicked —
+                        the size beside each name comes off BODYSTRUCTURE, so
+                        the choice is made with the real number in view rather
+                        than after ten megabytes have already moved. */}
+                    {detail.attachments.map((a, i) => {
+                      const id = `${a.part ?? i}`;
+                      const busy = downloading === id;
+                      const canSave = !!a.part && (a.size ?? 0) <= MAIL_MAX_ATTACHMENT_BYTES;
+                      return (
+                        <button
+                          key={id}
+                          onClick={() => void download(detail, a, id)}
+                          disabled={!canSave || busy}
+                          title={canSave ? t("mail.download") : t("mail.attachmentTooLarge")}
+                          className="flex items-center gap-1.5 rounded-lg bg-neutral-100 px-2.5 py-1 text-xs text-neutral-500 enabled:hover:bg-neutral-200 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-neutral-800 dark:text-neutral-400 dark:enabled:hover:bg-neutral-700"
+                        >
+                          {busy
+                            ? <Loader2 size={12} className="shrink-0 animate-spin" />
+                            : canSave
+                              ? <Download size={12} className="shrink-0" />
+                              : <Paperclip size={12} className="shrink-0" />}
+                          <span className="max-w-[16rem] truncate">{a.filename ?? a.content_type}</span>
+                          {a.size !== null && (
+                            <span className="text-neutral-400 dark:text-neutral-500">{fmtBytes(a.size)}</span>
+                          )}
+                        </button>
+                      );
+                    })}
                   </div>
+                )}
+                {downloadError && (
+                  <p className="mb-4 rounded-lg bg-red-50 p-3 text-sm leading-relaxed text-red-600 dark:bg-red-950/40">
+                    {downloadError}
+                  </p>
                 )}
                 {/* PLAIN TEXT, deliberately. `mime.ts` has already converted any
                     HTML part, and what lands here is never fed to a markdown

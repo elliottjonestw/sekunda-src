@@ -14,6 +14,11 @@
       "allow": [{ "path": "$HOME/**" }, { "path": "$DESKTOP/**" }, { "path": "$DOCUMENT/**" }, { "path": "$DOWNLOAD/**" }]
     },
     {
+      "//": "Binary writes, for saving a mail attachment. Same scopes as the text form: a path the user picked in the native save dialog, under their own directories.",
+      "identifier": "fs:allow-write-file",
+      "allow": [{ "path": "$HOME/**" }, { "path": "$DESKTOP/**" }, { "path": "$DOCUMENT/**" }, { "path": "$DOWNLOAD/**" }]
+    },
+    {
       "identifier": "fs:allow-read-text-file",
       "allow": [{ "path": "$HOME/**" }, { "path": "$DESKTOP/**" }, { "path": "$DOCUMENT/**" }, { "path": "$DOWNLOAD/**" }]
     },

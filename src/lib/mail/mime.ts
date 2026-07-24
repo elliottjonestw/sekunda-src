@@ -168,8 +168,9 @@ export function header(headers: Headers, name: string): string {
  * A `type/subtype; key=value` header, split into its parts.
  *
  * Handles quoted parameter values; does NOT handle RFC 2231 continuations
- * (`filename*0=`), which only show up on very long attachment names — the cost
- * there is a truncated filename in a list the user cannot download from anyway.
+ * (`filename*0=`), which show up on very long or non-ASCII attachment names.
+ * The cost is now a wrong *saved filename* rather than a wrong label — the
+ * download path uses this name — so it is worth more than it was.
  */
 export function parseContentType(value: string): { type: string; params: Record<string, string> } {
   const [head, ...rest] = value.split(";");
@@ -358,7 +359,13 @@ function walkPart(raw: string, depth: number): Walked {
       // No part number: this walker works from the bytes, which carry no
       // numbering. `attachmentsFromStructure` is the path that has one, and it
       // is preferred whenever the server gave us a BODYSTRUCTURE.
-      attachments: [{ part: null, filename, content_type: type || "application/octet-stream", size: body.length || null }],
+      attachments: [{
+        part: null,
+        encoding: encoding.trim().toLowerCase(),
+        filename,
+        content_type: type || "application/octet-stream",
+        size: body.length || null,
+      }],
     };
   }
 
@@ -409,6 +416,35 @@ export function decodeStandalonePart(
 }
 
 /**
+ * One part's actual BYTES, transfer encoding undone.
+ *
+ * The other decoders here all end in a string, because everything else in this
+ * module is text that a person or a model will read. An attachment is a file: a
+ * PDF put through `TextDecoder` is not a slightly damaged PDF, it is not a PDF.
+ * So this stops one step earlier and hands back the octets.
+ *
+ * Base64 is padded rather than trimmed here — unlike `decodeBase64`, which
+ * tolerates a body cut mid-quantum. A truncated *file* is refused upstream, so
+ * anything reaching this should be whole, and quietly dropping a ragged tail
+ * would turn "your download was cut short" into a file that opens wrong.
+ */
+export function decodePartBytes(body: string, encoding: string): Uint8Array {
+  const enc = encoding.trim().toLowerCase();
+  if (enc === "base64") {
+    const clean = body.replace(/[^A-Za-z0-9+/=]/g, "");
+    const padded = clean + "=".repeat((4 - (clean.length % 4)) % 4);
+    try {
+      return toBytes(atob(padded));
+    } catch {
+      return new Uint8Array(0);
+    }
+  }
+  if (enc === "quoted-printable") return toBytes(decodeQuotedPrintable(body));
+  // 7bit / 8bit / binary — already the bytes, one code unit each.
+  return toBytes(body);
+}
+
+/**
  * The attachment list, from the structure rather than from the bytes.
  *
  * Better than the walker's list in the two ways that were actually wrong:
@@ -431,6 +467,10 @@ export function attachmentsFromStructure(parts: ImapBodyPart[]): MailAttachment[
     .filter((p) => p.disposition === "attachment" || !!p.filename || p.type !== "text")
     .map((p) => ({
       part: p.part,
+      // Carried so the download path knows how to turn the bytes back into a
+      // file. It comes off the structure rather than off the part's own headers
+      // because at download time we have the part and not the headers.
+      encoding: p.encoding,
       filename: p.filename,
       content_type: `${p.type || "application"}/${p.subtype || "octet-stream"}`,
       size: p.size,

@@ -41,11 +41,22 @@ const MAX_BODY_BYTES: usize = 262_144;
 /// Mirrors `MAIL_SMALL_MESSAGE_BYTES` — at or below this a message is fetched
 /// whole and walked by the client's original MIME parser.
 const SMALL_MESSAGE_BYTES: u64 = 65_536;
+/// Mirrors `MAIL_MAX_ATTACHMENT_WIRE_BYTES` — the cap on an attachment read,
+/// measured on the wire where base64 costs four bytes per three.
+const MAX_ATTACHMENT_WIRE_BYTES: usize = 14_000_000;
+/// The response ceiling. Per-connection rather than a constant, because the
+/// attachment op needs one forty times higher than everything else and lowering
+/// the guard for every response to suit one of them is the wrong trade.
 const MAX_RESPONSE_BYTES: usize = MAX_BODY_BYTES + 65_536;
 const MAX_RESULTS: usize = 100;
 /// Mirrors `MAIL_MAX_UIDS` — how far back the client may page.
 const MAX_UIDS: usize = 5_000;
 const DEADLINE: Duration = Duration::from_secs(20);
+/// Downloading an attachment gets longer: it is the one op whose time is spent
+/// on bytes rather than latency, and a working download that reports "the mail
+/// server took too long" is the worst of both. Still bounded, by a deadline
+/// rather than a hope.
+const PART_DEADLINE: Duration = Duration::from_secs(60);
 const HEADER_FIELDS: &str = "DATE SUBJECT FROM TO CC REPLY-TO MESSAGE-ID CONTENT-TYPE LIST-ID";
 
 // ---------------------------------------------------------------------------
@@ -111,6 +122,15 @@ pub enum MailOp {
         creds: Credentials,
         mailbox: String,
     },
+    /// One MIME part's raw bytes — an attachment, downloaded on demand. Still a
+    /// read: `BODY.PEEK` on a part is the same command shape as the text.
+    Part {
+        #[serde(flatten)]
+        creds: Credentials,
+        mailbox: String,
+        uid: u32,
+        part: String,
+    },
 }
 
 impl MailOp {
@@ -121,6 +141,7 @@ impl MailOp {
             MailOp::Fetch { creds, .. } => creds,
             MailOp::Headers { creds, .. } => creds,
             MailOp::Status { creds, .. } => creds,
+            MailOp::Part { creds, .. } => creds,
         }
     }
 }
@@ -218,6 +239,15 @@ pub enum OpResult {
     Fetch {
         uidvalidity: u32,
         message: Message,
+    },
+    Part {
+        uidvalidity: u32,
+        /// RAW bytes as a binary string, still in the part's transfer encoding.
+        body: String,
+        /// True when the read hit the wire cap. The client refuses to save a
+        /// truncated part: a file cut short is a corrupted file that looks like
+        /// a saved one.
+        truncated: bool,
     },
 }
 
@@ -572,6 +602,8 @@ struct Conn {
     stream: TlsStream<TcpStream>,
     buf: Vec<u8>,
     tag: u32,
+    /// Raised for the attachment op and nothing else.
+    max_response: usize,
 }
 
 impl Conn {
@@ -596,7 +628,7 @@ impl Conn {
                 self.buf.drain(..idx + 2);
                 return Ok(line);
             }
-            if self.buf.len() > MAX_RESPONSE_BYTES {
+            if self.buf.len() > self.max_response {
                 return Err("The mail server sent more data than we will read.".to_string());
             }
             self.fill().await?;
@@ -620,7 +652,7 @@ impl Conn {
         let mut out = self.read_line().await?;
         loop {
             let Some(n) = literal_length(&out) else { return Ok(out) };
-            if n > MAX_RESPONSE_BYTES || out.len() + n > MAX_RESPONSE_BYTES {
+            if n > self.max_response || out.len() + n > self.max_response {
                 return Err("The mail server sent more data than we will read.".to_string());
             }
             let literal = self.read_bytes(n).await?;
@@ -940,6 +972,15 @@ fn search_args(criteria: &Criteria) -> Result<(Vec<Arg>, bool), String> {
     Ok((args, non_ascii))
 }
 
+/// An IMAP part number: `1`, `2.1`, `3.1.2`. Digits and dots, nothing else.
+fn is_part_number(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value.split('.').all(|seg| {
+            !seg.is_empty() && seg.chars().all(|c| c.is_ascii_digit()) && !seg.starts_with('0')
+        })
+}
+
 fn is_imap_date(value: &str) -> bool {
     let parts: Vec<&str> = value.split('-').collect();
     parts.len() == 3
@@ -1073,6 +1114,36 @@ async fn run_op(conn: &mut Conn, op: &MailOp) -> Result<OpResult, String> {
             Ok(OpResult::Status { uidvalidity, uidnext, messages, unseen })
         }
 
+        MailOp::Part { mailbox, uid, part, .. } => {
+            reject_control(mailbox, "Mailbox names")?;
+            // The part number is INTERPOLATED into `BODY.PEEK[…]`, where IMAP
+            // has no quoted form to hide behind the way a search term does — so
+            // its shape is checked here rather than trusted, exactly as
+            // `is_imap_date` is. The shared schema checks it too; this command
+            // is not only reachable from our client.
+            if !is_part_number(part) {
+                return Err("That is not a part of this message.".to_string());
+            }
+            let (.., uidvalidity) =
+                parse_examine(&conn.command(&[Arg::Text("EXAMINE ".into()), astring(mailbox)]).await?);
+            // The one op allowed to read megabytes.
+            conn.max_response = MAX_ATTACHMENT_WIRE_BYTES + 65_536;
+            let lines = conn
+                .command(&[Arg::Text(format!(
+                    "UID FETCH {} (UID BODY.PEEK[{}]<0.{}>)",
+                    uid, part, MAX_ATTACHMENT_WIRE_BYTES
+                ))])
+                .await?;
+            let body = parse_fetch(&lines)
+                .into_iter()
+                .next()
+                .ok_or_else(|| "That message no longer exists.".to_string())?
+                .part_body
+                .unwrap_or_default();
+            let truncated = body.len() >= MAX_ATTACHMENT_WIRE_BYTES;
+            Ok(OpResult::Part { uidvalidity, body, truncated })
+        }
+
         MailOp::Headers { mailbox, uids, .. } => {
             reject_control(mailbox, "Mailbox names")?;
             let (.., uidvalidity) =
@@ -1181,7 +1252,7 @@ async fn connect_and_run(op: MailOp) -> Result<OpResult, String> {
         .await
         .map_err(|_| "Could not start a secure connection to the mail server.".to_string())?;
 
-    let mut conn = Conn { stream, buf: Vec::new(), tag: 0 };
+    let mut conn = Conn { stream, buf: Vec::new(), tag: 0, max_response: MAX_RESPONSE_BYTES };
 
     let greeting = conn.read_response().await?;
     if !(greeting.starts_with("* OK") || greeting.starts_with("* PREAUTH")) {
@@ -1298,6 +1369,29 @@ mod tests {
         // `UID n:*` is how new mail arrives without re-running the query.
         let (fresh, _) = search_args(&Criteria { uid_min: Some(9931), ..Default::default() }).unwrap();
         assert!(matches!(fresh.last(), Some(Arg::Text(t)) if t == "UID 9931:*"));
+    }
+
+    /// A part number is INTERPOLATED into `BODY.PEEK[…]`. IMAP has no quoted
+    /// form for one, so its shape is the whole defence — and this command is
+    /// reachable from anything that gets to the IPC bridge, not only our
+    /// client, so the shared schema's check is not the only one that matters.
+    #[test]
+    fn refuses_anything_that_is_not_a_part_number() {
+        assert!(is_part_number("1") && is_part_number("2.1") && is_part_number("3.1.12"));
+        for bad in [
+            "",
+            "TEXT",
+            "1] BODY[",       // closing the section and opening another
+            "1 UID FETCH 1",  // a whole second command
+            "1.0",            // parts are 1-based
+            "01",             // no leading zeros
+            "1.",
+            ".1",
+            "1..2",
+            "-1",
+        ] {
+            assert!(!is_part_number(bad), "should have been refused: {:?}", bad);
+        }
     }
 
     #[test]
@@ -1573,7 +1667,8 @@ mod tests {
 /// a lifecycle the web path (which cannot have one) does not share.
 #[tauri::command]
 pub async fn imap_op(op: MailOp) -> Result<OpResult, String> {
-    match tokio::time::timeout(DEADLINE, connect_and_run(op)).await {
+    let deadline = if matches!(op, MailOp::Part { .. }) { PART_DEADLINE } else { DEADLINE };
+    match tokio::time::timeout(deadline, connect_and_run(op)).await {
         Ok(result) => result,
         Err(_) => Err("The mail server took too long to answer.".to_string()),
     }

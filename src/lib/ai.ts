@@ -935,8 +935,9 @@ const MAIL_TOOLS = [
       name: "get_message",
       description:
         "Read one message in full: its body text and what was attached. The uid comes from search_mail and " +
-        "is ONLY valid in the mailbox it came from — pass that same mailbox back. Attachments are listed, " +
-        "never opened; there is no way to read one.",
+        "is ONLY valid in the mailbox it came from — pass that same mailbox back. Attachments are listed by " +
+        "name, type and size; you cannot open one and there is no tool that will. If the user wants a " +
+        "file, tell them to click it on the Mail page.",
       parameters: {
         type: "object",
         properties: {

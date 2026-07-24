@@ -189,6 +189,7 @@ test("every op the client can build is one the Worker will accept", () => {
     { ...creds, op: "search", mailbox: "INBOX", limit: 50, criteria: {} },
     // The freshness call: same search, restricted to what arrived since.
     { ...creds, op: "search", mailbox: "INBOX", limit: 50, criteria: { text: ["a", "b"], uid_min: 9931 } },
+    { ...creds, op: "part", mailbox: "INBOX", uid: 991, part: "2.1" },
   ]) {
     const parsed = mailOpSchema.safeParse(op);
     assert.ok(parsed.success, `${op.op} rejected: ${parsed.error?.message}`);
@@ -208,6 +209,15 @@ test("the envelope still refuses what it exists to refuse", () => {
     { ...creds, op: "headers", mailbox: "INBOX", uids: Array(MAIL_MAX_RESULTS + 1).fill(1) },
     { ...creds, op: "search", mailbox: "INBOX", limit: 1, criteria: { since: "2026-01-01" } },
     { ...creds, op: "search", mailbox: "INBOX", limit: 1, criteria: { uid_min: 0 } },
+    // A part number is INTERPOLATED into `BODY.PEEK[…]` — IMAP has no quoted
+    // form for one, so its shape is the whole defence. Both executors check it
+    // again; this is the first of the three layers.
+    { ...creds, op: "part", mailbox: "INBOX", uid: 1, part: "1] BODY[" },
+    { ...creds, op: "part", mailbox: "INBOX", uid: 1, part: "TEXT" },
+    { ...creds, op: "part", mailbox: "INBOX", uid: 1, part: "1.0" },
+    { ...creds, op: "part", mailbox: "INBOX", uid: 1, part: "01" },
+    { ...creds, op: "part", mailbox: "INBOX", uid: 1, part: "1." },
+    { ...creds, op: "part", mailbox: "INBOX", uid: 1, part: "" },
   ];
   for (const op of bad) assert.equal(mailOpSchema.safeParse(op).success, false, JSON.stringify(op.criteria ?? op));
 });

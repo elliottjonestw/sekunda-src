@@ -77,6 +77,40 @@ export const MAIL_MAX_RESULTS = 100;
 export const MAIL_MAX_UIDS = 5_000;
 
 /**
+ * The largest attachment this will hand over, measured on the DECODED file.
+ *
+ * A deliberate stopping point rather than a tuned number. The op envelope is
+ * JSON over one request — there is no streaming in it — so the whole part has
+ * to exist in memory twice over on the way past, and on the web path that
+ * memory is a Worker isolate with a 128 MB ceiling. Ten megabytes covers
+ * documents and photographs, which is what people attach; a video needs
+ * streaming, and streaming needs a different shape than this.
+ *
+ * Enforced as a refusal, never as a truncation. A file cut short is a
+ * corrupted file that looks like a saved one.
+ */
+export const MAIL_MAX_ATTACHMENT_BYTES = 10_485_760;
+
+/** The same cap on the wire, where base64 costs four bytes per three. This is
+ *  what bounds the actual read; the decoded figure above is what the user is
+ *  told about, because it is the number that matches the file. */
+export const MAIL_MAX_ATTACHMENT_WIRE_BYTES = 14_000_000;
+
+/**
+ * An IMAP part number: `1`, `2.1`, `3.1.2`.
+ *
+ * Validated because it is INTERPOLATED into `BODY.PEEK[…]` — it is a sequence
+ * of digits and dots in the protocol, so there is no quoted form to hide behind
+ * the way a search term has. Both executors check it again rather than trusting
+ * that this ran, on the same principle as `imapDate`.
+ */
+export const imapPartNumber = z
+  .string()
+  .min(1)
+  .max(64)
+  .regex(/^[1-9][0-9]*(\.[1-9][0-9]*)*$/, "Expected an IMAP part number.");
+
+/**
  * An IMAP date, `d-MMM-yyyy` with an English month (`1-Jan-2026`).
  *
  * Formatted by the client and re-validated by both executors. IMAP has no other
@@ -182,6 +216,26 @@ export const mailOpSchema = z.discriminatedUnion("op", [
    * N seconds forever, including while nobody is looking.
    */
   z.object({ ...credentials, op: z.literal("status"), mailbox: mailboxName }),
+  /**
+   * One MIME part's raw bytes — an attachment, downloaded on demand.
+   *
+   * Still a read: `BODY.PEEK` on a part is the same command shape as fetching
+   * the text, so this adds a feature without touching the read-only guarantee.
+   *
+   * **Returned still transfer-encoded.** Decoding in the Worker would inflate a
+   * 10 MB attachment into ~20 MB of JSON string inside an isolate with a 128 MB
+   * ceiling, to produce something the client has to decode anyway; passing the
+   * base64 through untouched keeps the relay cheap and puts the work on the
+   * machine that wants the file. It is also the same rule the message bodies
+   * follow, for the same reason: the transport decides nothing.
+   */
+  z.object({
+    ...credentials,
+    op: z.literal("part"),
+    mailbox: mailboxName,
+    uid: z.number().int().min(1),
+    part: imapPartNumber,
+  }),
 ]);
 
 export type MailOp = z.infer<typeof mailOpSchema>;
@@ -331,4 +385,14 @@ export type MailOpResult =
       /** Catches read-elsewhere, which moves neither of the other two. */
       unseen: number;
     }
-  | { op: "fetch"; uidvalidity: number; message: ImapMessageResult };
+  | { op: "fetch"; uidvalidity: number; message: ImapMessageResult }
+  | {
+      op: "part";
+      uidvalidity: number;
+      /** RAW bytes as a binary string, still in the part's transfer encoding. */
+      body: string;
+      /** True when the read hit MAIL_MAX_ATTACHMENT_WIRE_BYTES. The client must
+       *  refuse to save a truncated part: a file cut short is a corrupted file
+       *  that looks like a saved one. */
+      truncated: boolean;
+    };

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { decodeMailboxName, parseMailDate } from "../src/lib/mail/mime";
+import { decodeMailboxName, decodePartBytes, parseMailDate } from "../src/lib/mail/mime";
 
 /**
  * The client half of the mail pipeline, where the executors' raw bytes become
@@ -55,4 +55,26 @@ test("the sender's Date wins only while it is plausible", () => {
     parseMailDate("Fri, 1 Jan 2999 00:00:00 +0000", null),
     new Date("2999-01-01T00:00:00Z").toISOString(),
   );
+});
+
+test("an attachment comes back as BYTES, not as text", () => {
+  // A PDF header: bytes that are not valid UTF-8 anywhere downstream. Putting
+  // this through `TextDecoder` does not give a slightly damaged PDF, it gives
+  // something that is not a PDF — which is why the download path stops one
+  // step earlier than every other decoder in the module.
+  const pdf = Uint8Array.from([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34, 0x0a, 0xff, 0xd8, 0x00]);
+  const base64 = Buffer.from(pdf).toString("base64");
+  assert.deepEqual(decodePartBytes(base64, "base64"), pdf);
+  // Folded across lines, as it actually arrives on the wire.
+  assert.deepEqual(decodePartBytes(base64.replace(/(.{4})/g, "$1\r\n"), "base64"), pdf);
+
+  // Quoted-printable, soft line breaks and all.
+  assert.deepEqual(
+    decodePartBytes("caf=\r\n=C3=A9", "quoted-printable"),
+    Uint8Array.from([0x63, 0x61, 0x66, 0xc3, 0xa9]),
+  );
+  // 7bit/8bit/binary are already the bytes.
+  assert.deepEqual(decodePartBytes("hi", "7bit"), Uint8Array.from([0x68, 0x69]));
+  // Junk is empty, never a throw that takes the whole message with it.
+  assert.deepEqual(decodePartBytes("!!!!not base64!!!!", "base64"), new Uint8Array(0));
 });

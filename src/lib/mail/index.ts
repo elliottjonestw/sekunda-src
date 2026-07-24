@@ -7,6 +7,7 @@ export {
   DEFAULT_MAILBOX, getMessage, icloudAccount, listFolders, loadHeaders, mailboxStatus, peekMessage, searchMail,
 } from "./mailbox";
 export { clearMailCache } from "./cache";
+export { saveAttachment } from "./download";
 export { MailError } from "./types";
 export type {
   MailAddress, MailAttachment, MailboxStatus, MailMessageDetail, MailMessageSummary,
