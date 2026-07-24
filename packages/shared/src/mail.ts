@@ -62,8 +62,19 @@ export const MAIL_MAX_BODY_BYTES = 262_144;
  */
 export const MAIL_SMALL_MESSAGE_BYTES = 65_536;
 
-/** Messages one search may return. Matches ai.ts's own MAX_LIMIT. */
+/** Messages one search may return headers for in a single call. Matches ai.ts's
+ *  own MAX_LIMIT, and doubles as the page size bound for `headers`. */
 export const MAIL_MAX_RESULTS = 100;
+
+/**
+ * Matching uids one search will hand back for paging.
+ *
+ * `UID SEARCH` returns *every* match, and a real INBOX has six figures of them
+ * — as JSON that is most of a megabyte of integers through the relay, to
+ * support scrollback nobody will ever reach. 5,000 is a hundred pages of fifty,
+ * and `total` still reports the true count so the UI never claims otherwise.
+ */
+export const MAIL_MAX_UIDS = 5_000;
 
 /**
  * An IMAP date, `d-MMM-yyyy` with an English month (`1-Jan-2026`).
@@ -110,6 +121,16 @@ export const mailCriteriaSchema = z.object({
   since: imapDate.optional(),
   before: imapDate.optional(),
   unseen: z.boolean().optional(),
+  /**
+   * Only uids at or above this one (`UID n:*`).
+   *
+   * This is how new mail arrives without a re-search. Uids ascend with arrival
+   * in a mailbox, so everything that showed up since we last looked is above
+   * the highest uid we have — one narrow search instead of asking the server to
+   * re-evaluate a query against the whole mailbox. It works identically for a
+   * filtered list, which is why freshness needs no second mechanism.
+   */
+  uid_min: z.number().int().min(1).optional(),
 });
 
 export type MailCriteria = z.infer<typeof mailCriteriaSchema>;
@@ -140,6 +161,27 @@ export const mailOpSchema = z.discriminatedUnion("op", [
     mailbox: mailboxName,
     uid: z.number().int().min(1),
   }),
+  /**
+   * Headers for uids we already hold — one page of a list that was searched
+   * earlier. `search` hands back every matching uid; this turns a slice of them
+   * into something displayable, which is what makes "Load older" one small
+   * fetch rather than a second search.
+   */
+  z.object({
+    ...credentials,
+    op: z.literal("headers"),
+    mailbox: mailboxName,
+    uids: z.array(z.number().int().min(1)).min(1).max(MAIL_MAX_RESULTS),
+  }),
+  /**
+   * What the server says about a mailbox, carrying no message data at all.
+   *
+   * One cheap command that answers "has anything changed?" exactly, where a
+   * cache TTL can only guess. It is deliberately not on a timer: STATUS still
+   * needs a connection and a login, so polling every N seconds is a login every
+   * N seconds forever, including while nobody is looking.
+   */
+  z.object({ ...credentials, op: z.literal("status"), mailbox: mailboxName }),
 ]);
 
 export type MailOp = z.infer<typeof mailOpSchema>;
@@ -240,5 +282,38 @@ export interface ImapMessageResult {
 
 export type MailOpResult =
   | { op: "list"; folders: ImapFolderResult[] }
-  | { op: "search"; total: number; truncated: boolean; messages: ImapMessageResult[] }
+  | {
+      op: "search";
+      /** How many matched in all, before any cap. */
+      total: number;
+      /** True when `total` exceeded MAIL_MAX_UIDS, so not even the uid list is
+       *  complete — the UI can page, but not all the way back. */
+      truncated: boolean;
+      /** Every matching uid we will page over, **newest first**. Ordered here
+       *  rather than left in the server's ascending order because every caller
+       *  wants it this way round, and reversing it in three places is three
+       *  chances to get it wrong. */
+      uids: number[];
+      /**
+       * The freshness baseline, read off the EXAMINE this search already did —
+       * so it costs no extra command. A later `status` op compared against
+       * these two says exactly whether the list is still current, where a cache
+       * TTL could only guess. Zero when the server didn't volunteer them.
+       */
+      uidnext: number;
+      exists: number;
+      /** Headers for the first page of `uids`. */
+      messages: ImapMessageResult[];
+    }
+  | { op: "headers"; messages: ImapMessageResult[] }
+  | {
+      op: "status";
+      /** The uid the next arrival will get. Unchanged means nothing new. */
+      uidnext: number;
+      /** How many messages the mailbox holds. Catches deletions elsewhere,
+       *  which leave UIDNEXT alone. */
+      messages: number;
+      /** Catches read-elsewhere, which moves neither of the other two. */
+      unseen: number;
+    }
   | { op: "fetch"; message: ImapMessageResult };

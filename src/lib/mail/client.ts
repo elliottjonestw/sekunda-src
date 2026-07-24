@@ -32,6 +32,8 @@ import { MailError } from "./types";
 export type MailRequest =
   | { op: "list" }
   | { op: "search"; mailbox: string; criteria: MailCriteria; limit: number }
+  | { op: "headers"; mailbox: string; uids: number[] }
+  | { op: "status"; mailbox: string }
   | { op: "fetch"; mailbox: string; uid: number };
 
 export async function imapCall(account: MailAccount, request: MailRequest): Promise<MailOpResult> {

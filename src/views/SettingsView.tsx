@@ -1589,7 +1589,7 @@ function MailSettingsPane() {
         </Notice>
         {connected && account.folders.length > 0 && (
           <p className="mt-3 text-xs text-neutral-400">
-            {t("settings.mail.mailboxes", { list: account.folders.map((f) => f.name).join(", ") })}
+            {t("settings.mail.mailboxes", { list: account.folders.map((f) => f.label ?? f.name).join(", ") })}
           </p>
         )}
       </section>

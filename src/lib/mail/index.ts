@@ -3,8 +3,11 @@
  * from `client.ts` or `mime.ts` directly — the transport pick and the MIME
  * parser are implementation details, and the credential read lives behind them.
  */
-export { DEFAULT_MAILBOX, getMessage, icloudAccount, listFolders, searchMail } from "./mailbox";
+export {
+  DEFAULT_MAILBOX, getMessage, icloudAccount, listFolders, loadHeaders, mailboxStatus, searchMail,
+} from "./mailbox";
 export { MailError } from "./types";
 export type {
-  MailAddress, MailAttachment, MailMessageDetail, MailMessageSummary, MailSearchParams,
+  MailAddress, MailAttachment, MailboxStatus, MailMessageDetail, MailMessageSummary,
+  MailSearchParams, MailSearchResult,
 } from "./types";

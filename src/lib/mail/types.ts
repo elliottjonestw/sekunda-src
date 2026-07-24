@@ -63,6 +63,41 @@ export interface MailMessageDetail extends MailMessageSummary {
   attachments: MailAttachment[];
 }
 
+/** What the server says about a mailbox, with no message data in it. */
+export interface MailboxStatus {
+  /** The uid the next arrival will get. Unchanged means nothing new. */
+  uidnext: number;
+  /** How many messages it holds — catches a deletion elsewhere, which leaves
+   *  `uidnext` alone. */
+  messages: number;
+  /**
+   * Catches read-elsewhere, which moves neither of the other two.
+   *
+   * Null when the number came from opening the mailbox rather than from a
+   * STATUS: EXAMINE reports the *sequence number of the first unseen message*,
+   * not a count, and a number that looks plausible and is wrong is worse than
+   * none. So this is comparable only from one STATUS to the next.
+   */
+  unseen: number | null;
+}
+
+export interface MailSearchResult {
+  /** How many matched in all. */
+  total: number;
+  /** True when even the uid list was capped, so paging cannot reach the end. */
+  truncated: boolean;
+  mailbox: string;
+  /** Every matching uid, newest first — the list to page over. Held by the
+   *  caller so a later page costs a header fetch, not a second search. */
+  uids: number[];
+  /** The freshness baseline this search saw, for a later `mailboxStatus` to be
+   *  compared against. `unseen` is null because opening a mailbox does not
+   *  report a count of unseen messages — only a later STATUS does. */
+  status: MailboxStatus;
+  /** The first page, already decoded and sorted newest-first by date. */
+  results: MailMessageSummary[];
+}
+
 export interface MailSearchParams {
   mailbox?: string;
   /** Free text: matched by the server against headers and, where it indexes
@@ -76,6 +111,9 @@ export interface MailSearchParams {
   before?: string;
   unseen?: boolean;
   limit?: number;
+  /** Only mail at or above this uid — how a list picks up new arrivals without
+   *  asking the server to re-run the whole query. */
+  uidMin?: number;
 }
 
 /** Anything that went wrong reaching or reading the mailbox. One class, because

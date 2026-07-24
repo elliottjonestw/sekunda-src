@@ -578,7 +578,9 @@
     "truncated": "此郵件較長，僅顯示開頭部分。",
     "attachmentsHint": "附件僅列出，無法在此開啟 —— 請使用「郵件」App 或 iCloud.com。",
     "showingAll_other": "{{count}} 封郵件。",
-    "showingNewest": "顯示 {{total}} 封符合郵件中最新的 {{count}} 封。"
+    "loadOlder": "載入較舊的郵件",
+    "showingOf": "顯示 {{count}} 封，共 {{total}} 封。",
+    "showingCapped": "顯示 {{count}} 封。此信箱有 {{total}} 封符合的郵件，超過這裡可翻閱的數量。"
   },
   "assistant": {
     "title": "AI 助理",

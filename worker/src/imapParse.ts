@@ -262,6 +262,61 @@ export function parseFolders(lines: string[]): ImapFolderResult[] {
   return folders;
 }
 
+/**
+ * The two numbers EXAMINE already volunteers: `* 1204 EXISTS` and
+ * `* OK [UIDNEXT 9931] …`.
+ *
+ * Reading them here is what keeps the freshness check off the critical path —
+ * every search opens the mailbox anyway, so the baseline "how many, and what
+ * uid comes next" costs no command at all. Only the *later* check needs a
+ * STATUS, and only when the window is refocused.
+ *
+ * Matched by regex rather than by the token parser: these are two fixed forms,
+ * and `[UIDNEXT 9931]` tokenizes as one bracketed atom that would then need
+ * unpicking anyway.
+ *
+ * Note EXAMINE's `* OK [UNSEEN n]` is deliberately NOT read: it is the sequence
+ * number of the first unseen message, not a count, and treating it as one gives
+ * a number that looks plausible and is wrong.
+ */
+export function parseExamine(lines: string[]): { uidnext: number; exists: number } {
+  const out = { uidnext: 0, exists: 0 };
+  for (const line of lines) {
+    const uidnext = /^\* OK \[UIDNEXT (\d+)\]/i.exec(line);
+    if (uidnext) out.uidnext = Number(uidnext[1]);
+    const exists = /^\* (\d+) EXISTS\b/i.exec(line);
+    if (exists) out.exists = Number(exists[1]);
+  }
+  return out;
+}
+
+/**
+ * `* STATUS "INBOX" (MESSAGES 1204 UIDNEXT 9931 UNSEEN 3)`.
+ *
+ * The mailbox name sits between the keyword and the list and is skipped rather
+ * than matched: it comes back in the server's own quoting and its own modified
+ * UTF-7, so comparing it to what we sent is a way to reject a correct answer.
+ * There is only ever one STATUS in flight, so the pairs are what matter.
+ */
+export function parseStatus(lines: string[]): { uidnext: number; messages: number; unseen: number } {
+  const out = { uidnext: 0, messages: 0, unseen: 0 };
+  for (const line of lines) {
+    const { items } = parseTokens(line, 0);
+    if (str(items[0]) !== "*" || str(items[1]).toUpperCase() !== "STATUS") continue;
+    const pairs = items.find(isList);
+    if (!pairs) continue;
+    for (let i = 0; i + 1 < pairs.length; i += 2) {
+      const key = str(pairs[i]).toUpperCase();
+      const value = Number(str(pairs[i + 1]));
+      if (!Number.isInteger(value) || value < 0) continue;
+      if (key === "UIDNEXT") out.uidnext = value;
+      else if (key === "MESSAGES") out.messages = value;
+      else if (key === "UNSEEN") out.unseen = value;
+    }
+  }
+  return out;
+}
+
 export function parseUids(lines: string[]): number[] {
   const uids: number[] = [];
   for (const line of lines) {

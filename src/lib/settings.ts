@@ -664,7 +664,12 @@ export function hasCalendarAccount(): boolean {
 
 /** One mailbox as reported by the IMAP LIST response. */
 export interface MailFolder {
-  name: string; // full path, e.g. "INBOX" or "Archive/2025"
+  name: string; // full path AS THE SERVER SAID IT — what every command carries
+  /** The same name out of IMAP's modified UTF-7, for display only. Optional
+   *  because this shape is persisted: an account connected before decoding
+   *  existed has folders without one, and they show the raw name until the next
+   *  LIST refreshes them. */
+  label?: string;
   delimiter: string; // hierarchy separator, usually "/"
   flags: string[]; // \HasNoChildren, \Sent, \Junk …
 }

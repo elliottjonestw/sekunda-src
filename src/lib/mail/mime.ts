@@ -90,6 +90,41 @@ export function decodeWords(text: string): string {
     });
 }
 
+/**
+ * A mailbox name out of IMAP's modified UTF-7 and into text.
+ *
+ * IMAP predates UTF-8 mailbox names, so a folder called 日本語 arrives on the
+ * wire as `&ZeVnLIqe-` — which is what the picker was showing. The encoding is
+ * base64 of UTF-16BE between `&` and `-`, with `,` standing in for `/` (which
+ * is the hierarchy delimiter), and a bare `&-` meaning a literal ampersand.
+ *
+ * **For display only.** The raw name is what every later command must carry:
+ * the server named the mailbox, and handing back a prettier version of it is
+ * how you get "no such mailbox" for a folder that plainly exists.
+ *
+ * The base64 here is UNPADDED, so it cannot go through `decodeBase64` — that
+ * one trims a ragged tail, which is right for a truncated message body and
+ * exactly wrong here, where a six-character chunk is four real bytes.
+ */
+export function decodeMailboxName(name: string): string {
+  return name.replace(/&([A-Za-z0-9+,]*)-/g, (whole, chunk: string) => {
+    if (chunk === "") return "&";
+    const b64 = chunk.replace(/,/g, "/");
+    try {
+      const bytes = atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4));
+      let out = "";
+      for (let i = 0; i + 1 < bytes.length; i += 2) {
+        out += String.fromCharCode((bytes.charCodeAt(i) << 8) | bytes.charCodeAt(i + 1));
+      }
+      return out || whole;
+    } catch {
+      // Not actually an encoded run. Leaving it as it was is the only honest
+      // answer — a folder whose name really does contain `&x-` is not an error.
+      return whole;
+    }
+  });
+}
+
 export type Headers = Map<string, string[]>;
 
 /**
@@ -191,18 +226,31 @@ export function parseAddresses(value: string): MailAddress[] {
  * INTERNALDATE arrives in IMAP's own syntax (`21-Jul-2026 10:00:00 +0800`),
  * which `Date` cannot parse until the day-month-year hyphens become spaces.
  * Both are normalized here — the one place that knows both formats.
+ *
+ * `Date` is preferred because it is what every other mail client shows and what
+ * the sender meant. But it is written by the *sender*, so it is also the one
+ * field a spammer sets to next year to pin a message to the top of a list
+ * sorted by date — and a misconfigured clock does the same thing by accident.
+ * So it is preferred only while it is *plausible*; outside that, what the
+ * server saw wins. Not a spam filter, just a refusal to be told anything.
  */
 export function parseMailDate(dateHeader: string, internalDate: string | null): string | null {
-  const candidates = [
-    dateHeader,
-    internalDate ? internalDate.replace(/^(\d{1,2})-(\w{3})-(\d{4})/, "$1 $2 $3") : "",
-  ];
-  for (const candidate of candidates) {
-    if (!candidate.trim()) continue;
-    const d = new Date(candidate.trim());
-    if (!isNaN(d.getTime())) return d.toISOString();
-  }
-  return null;
+  const server = internalDate
+    ? isoOrNull(internalDate.replace(/^(\d{1,2})-(\w{3})-(\d{4})/, "$1 $2 $3"))
+    : null;
+  const claimed = isoOrNull(dateHeader);
+  if (!claimed) return server;
+  // A day's grace ahead of now covers a clock that is merely wrong rather than
+  // lying; 1990 is comfortably before any mail anyone still has.
+  const t = new Date(claimed).getTime();
+  const plausible = t < Date.now() + 86_400_000 && t > Date.UTC(1990, 0, 1);
+  return plausible || !server ? claimed : server;
+}
+
+function isoOrNull(value: string): string | null {
+  if (!value.trim()) return null;
+  const d = new Date(value.trim());
+  return isNaN(d.getTime()) ? null : d.toISOString();
 }
 
 // ---------------------------------------------------------------------------

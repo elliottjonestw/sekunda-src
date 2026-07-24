@@ -43,6 +43,8 @@ const MAX_BODY_BYTES: usize = 262_144;
 const SMALL_MESSAGE_BYTES: u64 = 65_536;
 const MAX_RESPONSE_BYTES: usize = MAX_BODY_BYTES + 65_536;
 const MAX_RESULTS: usize = 100;
+/// Mirrors `MAIL_MAX_UIDS` — how far back the client may page.
+const MAX_UIDS: usize = 5_000;
 const DEADLINE: Duration = Duration::from_secs(20);
 const HEADER_FIELDS: &str = "DATE SUBJECT FROM TO CC REPLY-TO MESSAGE-ID CONTENT-TYPE LIST-ID";
 
@@ -62,6 +64,9 @@ pub struct Criteria {
     since: Option<String>,
     before: Option<String>,
     unseen: Option<bool>,
+    /// Only uids at or above this one (`UID n:*`) — how new mail arrives
+    /// without a re-search. See `uid_min` in packages/shared/src/mail.ts.
+    uid_min: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -93,6 +98,19 @@ pub enum MailOp {
         mailbox: String,
         uid: u32,
     },
+    /// Headers for uids we already hold — one page of an earlier search.
+    Headers {
+        #[serde(flatten)]
+        creds: Credentials,
+        mailbox: String,
+        uids: Vec<u32>,
+    },
+    /// What the server says about a mailbox, carrying no message data.
+    Status {
+        #[serde(flatten)]
+        creds: Credentials,
+        mailbox: String,
+    },
 }
 
 impl MailOp {
@@ -101,6 +119,8 @@ impl MailOp {
             MailOp::List { creds } => creds,
             MailOp::Search { creds, .. } => creds,
             MailOp::Fetch { creds, .. } => creds,
+            MailOp::Headers { creds, .. } => creds,
+            MailOp::Status { creds, .. } => creds,
         }
     }
 }
@@ -173,7 +193,22 @@ pub enum OpResult {
     Search {
         total: usize,
         truncated: bool,
+        /// Every matching uid we will page over, NEWEST FIRST.
+        uids: Vec<u32>,
+        /// The freshness baseline, read off the EXAMINE this search already
+        /// did. Zero when the server didn't volunteer them.
+        uidnext: u32,
+        exists: u32,
+        /// Headers for the first page of `uids`.
         messages: Vec<Message>,
+    },
+    Headers {
+        messages: Vec<Message>,
+    },
+    Status {
+        uidnext: u32,
+        messages: u32,
+        unseen: u32,
     },
     Fetch {
         message: Message,
@@ -695,6 +730,76 @@ fn parse_folders(lines: &[String]) -> Vec<Folder> {
     folders
 }
 
+/// The two numbers EXAMINE already volunteers: `* 1204 EXISTS` and
+/// `* OK [UIDNEXT 9931] …`.
+///
+/// Reading them here is what keeps the freshness check off the critical path —
+/// every search opens the mailbox anyway, so the baseline "how many, and what
+/// uid comes next" costs no command at all.
+///
+/// EXAMINE's `* OK [UNSEEN n]` is deliberately NOT read: it is the sequence
+/// number of the first unseen message, not a count, and treating it as one
+/// gives a number that looks plausible and is wrong.
+fn parse_examine(lines: &[String]) -> (u32, u32) {
+    let (mut uidnext, mut exists) = (0u32, 0u32);
+    for line in lines {
+        if let Some(rest) = strip_ci(line, "* OK [UIDNEXT ") {
+            if let Some(end) = rest.find(']') {
+                uidnext = rest[..end].trim().parse().unwrap_or(uidnext);
+            }
+        } else if let Some(rest) = strip_ci(line, "* ") {
+            if let Some(n) = rest.strip_suffix(" EXISTS").or_else(|| rest.strip_suffix(" exists")) {
+                exists = n.trim().parse().unwrap_or(exists);
+            }
+        }
+    }
+    (uidnext, exists)
+}
+
+/// `strip_prefix`, case-insensitively on the prefix — IMAP keywords are
+/// case-insensitive and servers do not agree on which case to use.
+fn strip_ci<'a>(line: &'a str, prefix: &str) -> Option<&'a str> {
+    if line.len() >= prefix.len() && line[..prefix.len()].eq_ignore_ascii_case(prefix) {
+        Some(&line[prefix.len()..])
+    } else {
+        None
+    }
+}
+
+/// `* STATUS "INBOX" (MESSAGES 1204 UIDNEXT 9931 UNSEEN 3)`.
+///
+/// The mailbox name sits between the keyword and the list and is skipped rather
+/// than matched: it comes back in the server's own quoting and its own modified
+/// UTF-7, so comparing it to what we sent is a way to reject a correct answer.
+/// There is only ever one STATUS in flight, so the pairs are what matter.
+fn parse_status(lines: &[String]) -> (u32, u32, u32) {
+    let (mut uidnext, mut messages, mut unseen) = (0u32, 0u32, 0u32);
+    for line in lines {
+        let chars: Vec<char> = line.chars().collect();
+        let (items, _) = parse_tokens(&chars, 0);
+        if token_at(&items, 0) != "*" || !token_at(&items, 1).eq_ignore_ascii_case("STATUS") {
+            continue;
+        }
+        let Some(Token::List(pairs)) = items.iter().find(|t| matches!(t, Token::List(_))) else {
+            continue;
+        };
+        let mut i = 0;
+        while i + 1 < pairs.len() {
+            let key = pairs[i].text().to_uppercase();
+            if let Ok(value) = pairs[i + 1].text().parse::<u32>() {
+                match key.as_str() {
+                    "UIDNEXT" => uidnext = value,
+                    "MESSAGES" => messages = value,
+                    "UNSEEN" => unseen = value,
+                    _ => {}
+                }
+            }
+            i += 2;
+        }
+    }
+    (uidnext, messages, unseen)
+}
+
 fn parse_uids(lines: &[String]) -> Vec<u32> {
     let mut uids = Vec::new();
     for line in lines {
@@ -762,7 +867,11 @@ fn parse_fetch(lines: &[String]) -> Vec<Message> {
 /// The criteria as SEARCH arguments. `ALL` when nothing was asked for — an
 /// empty key list is a syntax error, not "everything".
 fn search_args(criteria: &Criteria) -> Result<(Vec<Arg>, bool), String> {
-    let mut args: Vec<Arg> = Vec::new();
+    // UNDELETED, always and first. A message flagged \Deleted has been deleted
+    // in another client and is waiting for an expunge; showing it means
+    // offering to open mail the user believes is gone. It also makes the key
+    // list never empty, so the old `ALL` fallback has nothing left to guard.
+    let mut args: Vec<Arg> = vec![Arg::Text("UNDELETED ".into())];
     let mut non_ascii = false;
 
     for (key, values) in [
@@ -795,16 +904,17 @@ fn search_args(criteria: &Criteria) -> Result<(Vec<Arg>, bool), String> {
     if criteria.unseen.unwrap_or(false) {
         args.push(Arg::Text("UNSEEN ".to_string()));
     }
-    if args.is_empty() {
-        args.push(Arg::Text("ALL".to_string()));
+    // `UID n:*` — everything that arrived since we last looked. A u32, so it is
+    // interpolated rather than quoted; IMAP has no quoted form for a sequence
+    // set anyway.
+    if let Some(min) = criteria.uid_min.filter(|n| *n > 0) {
+        args.push(Arg::Text(format!("UID {}:* ", min)));
     }
 
     // NO TRAILING SPACE BEFORE THE CRLF. Each term above appends its own
     // separator, which leaves one dangling on the last of them, and iCloud
     // answers `BAD Parse Error` to `UID SEARCH UNSEEN ` — the space is a token
-    // boundary promising a search key that never arrives. `ALL` was the only
-    // branch that didn't append one, which is why an unfiltered list worked and
-    // every filter failed.
+    // boundary promising a search key that never arrives.
     if let Some(Arg::Text(last)) = args.last_mut() {
         if last.ends_with(' ') {
             let trimmed = last.trim_end().to_string();
@@ -902,11 +1012,60 @@ async fn fetch_message(conn: &mut Conn, uid: u32) -> Result<Message, String> {
     Ok(message)
 }
 
+/// Headers for a set of uids. One command; the caller decides which uids.
+///
+/// A message deleted since the uid list was taken simply comes back missing.
+/// That is the whole reason paging over a uid snapshot is safe: there is no
+/// offset to shift, so a gap is a gap and never a duplicated or skipped row.
+async fn fetch_headers(conn: &mut Conn, uids: &[u32]) -> Result<Vec<Message>, String> {
+    if uids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let set: Vec<String> = uids.iter().map(|u| u.to_string()).collect();
+    let mut messages = parse_fetch(
+        &conn
+            .command(&[Arg::Text(format!(
+                "UID FETCH {} (UID FLAGS INTERNALDATE RFC822.SIZE BODY.PEEK[HEADER.FIELDS ({})])",
+                set.join(","),
+                HEADER_FIELDS
+            ))])
+            .await?,
+    );
+    messages.sort_by(|a, b| b.uid.cmp(&a.uid));
+    Ok(messages)
+}
+
 async fn run_op(conn: &mut Conn, op: &MailOp) -> Result<OpResult, String> {
     match op {
         MailOp::List { .. } => Ok(OpResult::List {
             folders: parse_folders(&conn.command(&[Arg::Text("LIST \"\" \"*\"".into())]).await?),
         }),
+
+        // STATUS is the one op that must NOT open the mailbox: the RFC
+        // discourages STATUS on a selected mailbox, and there is nothing to
+        // gain from EXAMINE here — the whole point is a single command carrying
+        // no message data.
+        MailOp::Status { mailbox, .. } => {
+            reject_control(mailbox, "Mailbox names")?;
+            let lines = conn
+                .command(&[
+                    Arg::Text("STATUS ".into()),
+                    astring(mailbox),
+                    Arg::Text(" (UIDNEXT MESSAGES UNSEEN)".into()),
+                ])
+                .await?;
+            let (uidnext, messages, unseen) = parse_status(&lines);
+            Ok(OpResult::Status { uidnext, messages, unseen })
+        }
+
+        MailOp::Headers { mailbox, uids, .. } => {
+            reject_control(mailbox, "Mailbox names")?;
+            conn.command(&[Arg::Text("EXAMINE ".into()), astring(mailbox)]).await?;
+            let wanted: Vec<u32> = uids.iter().copied().filter(|u| *u > 0).take(MAX_RESULTS).collect();
+            Ok(OpResult::Headers {
+                messages: fetch_headers(conn, &wanted).await?,
+            })
+        }
 
         MailOp::Fetch { mailbox, uid, .. } => {
             reject_control(mailbox, "Mailbox names")?;
@@ -924,7 +1083,11 @@ async fn run_op(conn: &mut Conn, op: &MailOp) -> Result<OpResult, String> {
             ..
         } => {
             reject_control(mailbox, "Mailbox names")?;
-            conn.command(&[Arg::Text("EXAMINE ".into()), astring(mailbox)]).await?;
+            // EXAMINE also volunteers UIDNEXT and EXISTS, which is the
+            // freshness baseline for free: a later STATUS can be compared
+            // against it without this call paying for a second round trip.
+            let (uidnext, exists) =
+                parse_examine(&conn.command(&[Arg::Text("EXAMINE ".into()), astring(mailbox)]).await?);
 
             let (criteria_args, non_ascii) = search_args(criteria)?;
             let mut args: Vec<Arg> = vec![Arg::Text("UID SEARCH ".into())];
@@ -935,34 +1098,22 @@ async fn run_op(conn: &mut Conn, op: &MailOp) -> Result<OpResult, String> {
             }
             args.extend(criteria_args);
 
-            let uids = parse_uids(&conn.command(&args).await?);
+            let found = parse_uids(&conn.command(&args).await?);
             let limit = (*limit).clamp(1, MAX_RESULTS);
             // Newest last in a UID search, and newest is what a person means by
-            // "my mail" — so the window comes off the end.
-            let wanted: Vec<u32> = uids.iter().rev().take(limit).rev().copied().collect();
-            if wanted.is_empty() {
-                return Ok(OpResult::Search {
-                    total: 0,
-                    truncated: false,
-                    messages: Vec::new(),
-                });
-            }
-
-            let set: Vec<String> = wanted.iter().map(|u| u.to_string()).collect();
-            let mut messages = parse_fetch(
-                &conn
-                    .command(&[Arg::Text(format!(
-                        "UID FETCH {} (UID FLAGS INTERNALDATE RFC822.SIZE BODY.PEEK[HEADER.FIELDS ({})])",
-                        set.join(","),
-                        HEADER_FIELDS
-                    ))])
-                    .await?,
-            );
-            messages.sort_by(|a, b| b.uid.cmp(&a.uid));
+            // "my mail" — so both the cap and the first page come off the end.
+            // Handing back the whole (capped) list rather than just the page is
+            // what lets the client page backwards without asking the server to
+            // run the query again.
+            let uids: Vec<u32> = found.iter().rev().take(MAX_UIDS).copied().collect();
+            let page: Vec<u32> = uids.iter().take(limit).copied().collect();
             Ok(OpResult::Search {
-                total: uids.len(),
-                truncated: uids.len() > wanted.len(),
-                messages,
+                total: found.len(),
+                truncated: found.len() > uids.len(),
+                uidnext,
+                exists,
+                messages: fetch_headers(conn, &page).await?,
+                uids,
             })
         }
     }
@@ -1110,17 +1261,55 @@ mod tests {
                 Arg::Literal(t) => format!("<literal:{}>", t),
             })
             .collect();
-        // Note the absence of a trailing space: iCloud answers `BAD Parse
-        // Error` to a command that ends with one.
+        // UNDELETED leads every search: mail deleted in another client is
+        // waiting for an expunge, and offering to open it is offering mail the
+        // user believes is gone. Note also the absence of a trailing space:
+        // iCloud answers `BAD Parse Error` to a command that ends with one.
         assert_eq!(
             rendered.join(""),
-            "FROM \"alex\" SUBJECT <literal:台北> SINCE 1-Jan-2026 UNSEEN"
+            "UNDELETED FROM \"alex\" SUBJECT <literal:台北> SINCE 1-Jan-2026 UNSEEN"
         );
 
-        // No criteria is ALL — an empty key list is a syntax error, not
-        // "everything".
+        // No criteria is a bare UNDELETED, which is a complete search — so the
+        // old `ALL` fallback for an empty key list has nothing left to guard.
         let (empty, _) = search_args(&Criteria::default()).unwrap();
-        assert!(matches!(empty.as_slice(), [Arg::Text(t)] if t == "ALL"));
+        assert!(matches!(empty.as_slice(), [Arg::Text(t)] if t == "UNDELETED"));
+
+        // `UID n:*` is how new mail arrives without re-running the query.
+        let (fresh, _) = search_args(&Criteria { uid_min: Some(9931), ..Default::default() }).unwrap();
+        assert!(matches!(fresh.last(), Some(Arg::Text(t)) if t == "UID 9931:*"));
+    }
+
+    #[test]
+    fn reads_the_freshness_baseline_off_examine() {
+        let (uidnext, exists) = parse_examine(&[
+            "* FLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft)".to_string(),
+            "* 1204 EXISTS".to_string(),
+            "* 0 RECENT".to_string(),
+            "* OK [UIDVALIDITY 1517159100] UIDs valid".to_string(),
+            "* OK [UIDNEXT 9931] Predicted next UID".to_string(),
+            // A count of unseen messages is what this LOOKS like and is not
+            // what it is — EXAMINE reports the sequence number of the first
+            // unseen message. Reading it as a count gives a plausible wrong
+            // number, so it is not read at all.
+            "* OK [UNSEEN 1198] First unseen".to_string(),
+        ]);
+        assert_eq!((uidnext, exists), (9931, 1204));
+        assert_eq!(parse_examine(&["* OK [READ-ONLY]".to_string()]), (0, 0));
+    }
+
+    #[test]
+    fn reads_a_status_response() {
+        let (uidnext, messages, unseen) =
+            parse_status(&["* STATUS \"INBOX\" (MESSAGES 1204 UIDNEXT 9931 UNSEEN 3)".to_string()]);
+        assert_eq!((uidnext, messages, unseen), (9931, 1204, 3));
+
+        // A non-ASCII mailbox name comes back in the server's own modified
+        // UTF-7 and its own quoting — matching it against what we sent is a way
+        // to reject a correct answer, so the name is skipped, not compared.
+        let (uidnext, ..) = parse_status(&["* STATUS \"&ZeVnLIqe-\" (UIDNEXT 42)".to_string()]);
+        assert_eq!(uidnext, 42);
+        assert_eq!(parse_status(&["a1 OK done".to_string()]), (0, 0, 0));
     }
 
     /// The bug that made every filtered search fail against iCloud: each term

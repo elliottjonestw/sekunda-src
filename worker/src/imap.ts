@@ -1,12 +1,15 @@
 import { connect } from "cloudflare:sockets";
 import {
   MAIL_MAX_BODY_BYTES,
+  MAIL_MAX_UIDS,
   MAIL_SMALL_MESSAGE_BYTES,
   type MailCriteria,
   type MailOp,
   type MailOpResult,
 } from "@secondbrain/shared";
-import { chooseTextPart, ImapError, parseFetch, parseFolders, parseUids } from "./imapParse";
+import {
+  chooseTextPart, ImapError, parseExamine, parseFetch, parseFolders, parseStatus, parseUids,
+} from "./imapParse";
 
 /** The pure parsing layer lives in `imapParse.ts` so it can run outside a
  *  Worker isolate; `routes/mail.ts` still imports the error type from here. */
@@ -210,10 +213,14 @@ class ImapConnection {
 // ---------------------------------------------------------------------------
 
 
-/** The criteria, as IMAP SEARCH arguments. `ALL` when nothing was asked for —
- *  an empty search key list is a syntax error, not "everything". */
+/** The criteria, as IMAP SEARCH arguments. */
 function searchArgs(criteria: MailCriteria): { args: Arg[]; nonAscii: boolean } {
-  const args: Arg[] = [];
+  // UNDELETED, always and first. A message flagged \Deleted has been deleted in
+  // another client and is waiting for an expunge; showing it means offering to
+  // open mail the user believes is gone. It also makes the key list never empty,
+  // so the old `ALL` fallback — an empty search key list is a syntax error, not
+  // "everything" — has nothing left to guard.
+  const args: Arg[] = ["UNDELETED "];
   let nonAscii = false;
   // One key per term. Adjacent IMAP search keys are ANDed, so `FROM "Manda"
   // FROM "Contact"` is "both", which is what a multi-word query means.
@@ -230,14 +237,15 @@ function searchArgs(criteria: MailCriteria): { args: Arg[]; nonAscii: boolean } 
   if (criteria.since) args.push(`SINCE ${criteria.since} `);
   if (criteria.before) args.push(`BEFORE ${criteria.before} `);
   if (criteria.unseen) args.push("UNSEEN ");
-  if (args.length === 0) args.push("ALL");
+  // `UID n:*` — everything that arrived since we last looked. The number is a
+  // validated integer, so it is interpolated rather than quoted; IMAP has no
+  // quoted form for a sequence set anyway.
+  if (criteria.uid_min) args.push(`UID ${Math.floor(criteria.uid_min)}:* `);
 
   // NO TRAILING SPACE BEFORE THE CRLF. Each term above appends its own
   // separator, which leaves one dangling on the last of them, and iCloud
   // answers `BAD Parse Error` to `UID SEARCH UNSEEN ` — the space is a token
-  // boundary promising a search key that never arrives. `ALL` was the only
-  // branch that didn't append one, which is why an unfiltered list worked and
-  // every filter failed.
+  // boundary promising a search key that never arrives.
   const last = args[args.length - 1];
   if (typeof last === "string" && last.endsWith(" ")) {
     const trimmed = last.replace(/ +$/, "");
@@ -316,18 +324,45 @@ async function fetchMessage(conn: ImapConnection, uid: number) {
   return message;
 }
 
+/** Headers for a set of uids. One command; the caller decides which uids. */
+async function fetchHeaders(conn: ImapConnection, uids: number[]) {
+  if (uids.length === 0) return [];
+  const messages = parseFetch(await conn.command([
+    `UID FETCH ${uids.join(",")} (UID FLAGS INTERNALDATE RFC822.SIZE BODY.PEEK[HEADER.FIELDS (${HEADER_FIELDS})])`,
+  ]));
+  // A message deleted since the uid list was taken simply comes back missing.
+  // That is the whole reason paging over a uid snapshot is safe: there is no
+  // offset to shift, so a gap is a gap and never a duplicated or skipped row.
+  messages.sort((a, b) => b.uid - a.uid);
+  return messages;
+}
+
 async function runOp(conn: ImapConnection, op: MailOp): Promise<MailOpResult> {
   if (op.op === "list") {
     return { op: "list", folders: parseFolders(await conn.command(['LIST "" "*"'])) };
   }
 
+  // STATUS is the one op that must NOT open the mailbox: the RFC discourages
+  // STATUS on a selected mailbox, and there is nothing to gain from EXAMINE
+  // here — the whole point is a single command carrying no message data.
+  if (op.op === "status") {
+    return {
+      op: "status",
+      ...parseStatus(await conn.command(["STATUS ", astring(op.mailbox), " (UIDNEXT MESSAGES UNSEEN)"])),
+    };
+  }
+
   // Read-only. The server enforces it from here on — see the header note.
-  await conn.command(["EXAMINE ", astring(op.mailbox)]);
+  // EXAMINE also volunteers UIDNEXT and EXISTS, which is the freshness baseline
+  // for free: a later STATUS can be compared against it without this call
+  // having paid for a second round trip.
+  const examine = parseExamine(await conn.command(["EXAMINE ", astring(op.mailbox)]));
 
   if (op.op === "fetch") return { op: "fetch", message: await fetchMessage(conn, op.uid) };
+  if (op.op === "headers") return { op: "headers", messages: await fetchHeaders(conn, op.uids) };
 
   const { args, nonAscii } = searchArgs(op.criteria);
-  const uids = parseUids(await conn.command([
+  const found = parseUids(await conn.command([
     "UID SEARCH ",
     // CHARSET is required before non-ASCII search keys, and rejected by some
     // servers when there are none — so it is sent only when it is needed.
@@ -336,15 +371,19 @@ async function runOp(conn: ImapConnection, op: MailOp): Promise<MailOpResult> {
   ]));
 
   // Newest last in a UID search, and newest is what a person means by "my
-  // mail" — so the window comes off the end, not the start.
-  const wanted = uids.slice(-op.limit);
-  if (wanted.length === 0) return { op: "search", total: 0, truncated: false, messages: [] };
-
-  const messages = parseFetch(await conn.command([
-    `UID FETCH ${wanted.join(",")} (UID FLAGS INTERNALDATE RFC822.SIZE BODY.PEEK[HEADER.FIELDS (${HEADER_FIELDS})])`,
-  ]));
-  messages.sort((a, b) => b.uid - a.uid);
-  return { op: "search", total: uids.length, truncated: uids.length > wanted.length, messages };
+  // mail" — so both the cap and the first page come off the end. Handing back
+  // the whole (capped) list rather than just the page is what lets the client
+  // page backwards without asking the server to run the query again.
+  const uids = found.slice(-MAIL_MAX_UIDS).reverse();
+  return {
+    op: "search",
+    total: found.length,
+    truncated: found.length > uids.length,
+    uids,
+    uidnext: examine.uidnext,
+    exists: examine.exists,
+    messages: await fetchHeaders(conn, uids.slice(0, op.limit)),
+  };
 }
 
 /**

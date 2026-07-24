@@ -5,12 +5,13 @@ import {
 import type { MailAccount, MailFolder } from "../settings";
 import { imapCall } from "./client";
 import {
-  attachmentsFromStructure, decodeStandalonePart, decodeWords, header,
+  attachmentsFromStructure, decodeMailboxName, decodeStandalonePart, decodeWords, header,
   parseAddresses, parseHeaders, parseMailDate, parseMessage,
 } from "./mime";
 import {
   MailError,
-  type MailMessageDetail, type MailMessageSummary, type MailSearchParams,
+  type MailboxStatus, type MailMessageDetail, type MailMessageSummary,
+  type MailSearchParams, type MailSearchResult,
 } from "./types";
 
 /**
@@ -54,7 +55,14 @@ function terms(value: string | undefined): string[] | undefined {
 export async function listFolders(account: MailAccount): Promise<MailFolder[]> {
   const result = await imapCall(account, { op: "list" });
   if (result.op !== "list") throw new MailError("The mail server answered the wrong question.");
-  return result.folders.map((f) => ({ name: f.name, delimiter: f.delimiter, flags: f.flags }));
+  return result.folders.map((f) => ({
+    name: f.name,
+    // Decoded for the picker only. `name` stays exactly as the server said it,
+    // because that is what every later command has to carry.
+    label: decodeMailboxName(f.name),
+    delimiter: f.delimiter,
+    flags: f.flags,
+  }));
 }
 
 /** A summary from the raw header block the search fetched. */
@@ -101,7 +109,7 @@ function decodeSubject(raw: string): string {
 export async function searchMail(
   account: MailAccount,
   params: MailSearchParams = {},
-): Promise<{ total: number; truncated: boolean; mailbox: string; results: MailMessageSummary[] }> {
+): Promise<MailSearchResult> {
   const mailbox = params.mailbox?.trim() || DEFAULT_MAILBOX;
   // `queryTerms` is the app's one splitter — the same one the global search bar
   // and every assistant search tool use. A phrase sent as a single IMAP key
@@ -114,6 +122,7 @@ export async function searchMail(
     ...(params.since ? { since: toImapDate(params.since) } : {}),
     ...(params.before ? { before: toImapDate(params.before) } : {}),
     ...(params.unseen ? { unseen: true } : {}),
+    ...(params.uidMin ? { uid_min: params.uidMin } : {}),
   };
   // `toImapDate` returns undefined for junk; strip those rather than sending a
   // key the schema will reject and turn into "expected a mail op".
@@ -129,8 +138,65 @@ export async function searchMail(
     total: result.total,
     truncated: result.truncated,
     mailbox,
-    results: result.messages.map((m) => toSummary(mailbox, m)),
+    uids: result.uids,
+    status: { uidnext: result.uidnext, messages: result.exists, unseen: null },
+    results: byDateDescending(result.messages.map((m) => toSummary(mailbox, m))),
   };
+}
+
+/**
+ * Headers for uids already in hand — one page of a list `searchMail` returned.
+ *
+ * This is what makes "Load older" one small fetch instead of a second search,
+ * and paging over a *snapshot* of the uid list is safe against mail arriving
+ * mid-session for a reason that is a property of uids rather than luck: uids
+ * ascend with arrival, so a new message is always above the window being paged,
+ * never inside it. Offset paging is what duplicates and skips rows; this
+ * cannot. A message deleted while paging simply comes back missing.
+ */
+export async function loadHeaders(
+  account: MailAccount,
+  uids: number[],
+  mailbox = DEFAULT_MAILBOX,
+): Promise<MailMessageSummary[]> {
+  const wanted = uids.filter((u) => Number.isInteger(u) && u > 0).slice(0, MAIL_MAX_RESULTS);
+  if (wanted.length === 0) return [];
+  const result = await imapCall(account, { op: "headers", mailbox, uids: wanted });
+  if (result.op !== "headers") throw new MailError("The mail server answered the wrong question.");
+  return byDateDescending(result.messages.map((m) => toSummary(mailbox, m)));
+}
+
+/**
+ * What the server says about a mailbox, without any message data.
+ *
+ * The answer to "is the list I am showing still current?" — exactly, rather
+ * than by a cache TTL, which can only guess at something the server will state.
+ * `uidnext` moving means new mail; `messages` moving on its own means a
+ * deletion elsewhere; `unseen` moving on its own means read elsewhere.
+ */
+export async function mailboxStatus(
+  account: MailAccount,
+  mailbox = DEFAULT_MAILBOX,
+): Promise<MailboxStatus> {
+  const result = await imapCall(account, { op: "status", mailbox });
+  if (result.op !== "status") throw new MailError("The mail server answered the wrong question.");
+  return { uidnext: result.uidnext, messages: result.messages, unseen: result.unseen };
+}
+
+/**
+ * Newest first, by DATE — not by uid.
+ *
+ * A uid is arrival order *in that mailbox*, which is the same as send order
+ * only for mail that was delivered there and never touched. Anything filed by a
+ * rule, moved by hand, or imported from another account arrives in whatever
+ * order the copy happened, so an Archive folder sorted by uid is in no order a
+ * person recognises. Undated messages sink rather than sorting as 1970.
+ */
+function byDateDescending(messages: MailMessageSummary[]): MailMessageSummary[] {
+  return [...messages].sort((a, b) => {
+    if (!a.date || !b.date) return a.date ? -1 : b.date ? 1 : 0;
+    return b.date.localeCompare(a.date);
+  });
 }
 
 /** Body text kept from one message. Well past a long email and well short of

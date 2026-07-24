@@ -13,6 +13,7 @@ npm run worker:dev     # local Worker + D1 (wrangler dev); tauri dev starts it t
 npm run worker:migrate # apply D1 migrations locally (idempotent)
 npx tsc --noEmit       # after every change — ALSO -p worker and -p packages/shared
 npx vite build         # after every change
+npm test               # unit tests: test/ (client) + worker/test/ (IMAP parsing)
 cd src-tauri && cargo check    # after touching Rust
 npm run tauri build && open "src-tauri/target/release/bundle/macos/Sekunda.app"
 ```
@@ -87,7 +88,12 @@ npm run test:e2e         # wdio run wdio.conf.ts → e2e/*.spec.ts
 - **"Email" is not "contact".** The assistant reached for `search_people` on "do I have any Manda Contact emails" — People is an address book the user typed, and most senders have no card in it. `MAIL_PROMPT` names the distinction explicitly; keep it there.
 - **IMAP SEARCH has no ranking.** Results are the most *recent* matches. Any surface that implies relevance is lying, which is why the tool description says so to the model.
 - **The Mail page is conditional, and the sidebar is rendered by `App`** — which has no reason to re-render when a Settings pane writes localStorage. `saveMailSettings` fires `MAIL_ACCOUNT_EVENT` and `App` listens; without it, connecting an inbox leaves the page invisible until the next navigation.
-- **A keystroke in the mail search box is a TLS handshake and a round-trip to Apple.** It is debounced (500 ms) for the reason `searchEvents` documents for CalDAV, and opened messages are cached for the life of the view. Don't add a live-filter that re-queries per character.
+- **A keystroke in the mail search box is a TLS handshake and a round-trip to Apple.** It is debounced (500 ms) for the reason `searchEvents` documents for CalDAV, and opened messages are cached for the life of the view. Don't add a live-filter that re-queries per character. **Paging is a button, never scroll position** — a scroll-triggered fetch spends a login by accident.
+- **Paging is over a SNAPSHOT of the uid list, and that is what makes it safe.** `search` returns every matching uid (capped at `MAIL_MAX_UIDS`); a page is a `headers` op over a slice of it. Uids ascend with arrival, so a message that arrives mid-session is always *above* the window being paged, never inside it — offset paging is what duplicates and skips rows. A message deleted mid-page just comes back missing from the FETCH, which is a gap and never a wrong row. **`loadOlder` slices `uids` at `messages.length`**, so anything that prepends must add to both in lockstep or the offset drifts; `checkForNewMail` reloads outright rather than prepend uids it has no headers for.
+- **Freshness is `STATUS` on focus, never a timer.** STATUS needs a connection and a login, so a poll every N seconds is a login every N seconds forever while nobody is looking — the same objection that keeps the Today summary off a timer. The baseline it compares against is free: `EXAMINE` already volunteers `UIDNEXT` and `EXISTS`, so a search pays nothing for it. **EXAMINE's `* OK [UNSEEN n]` is the sequence number of the first unseen message, NOT a count** — reading it as one gives a plausible wrong number, which is why `MailboxStatus.unseen` is nullable and only comparable between two STATUS calls. Only a clean arrival takes the cheap path (`uid_min`); a deletion, a mixed change, or a missing `uidnext` re-searches — and the `uidnext === 0` guard is load-bearing, because `uid_min: 0` is no filter at all and would prepend the first page onto the list it is already the top of.
+- **`UNDELETED` leads every search**, which also means the key list is never empty — the old `ALL` fallback (an empty key list is a syntax error, not "everything") has nothing left to guard.
+- **A mailbox name is decoded for DISPLAY ONLY** (`decodeMailboxName`, modified UTF-7). `MailFolder.name` stays exactly what the server said; `label` is the readable one. Sending back the prettier version is how you get "no such mailbox" for a folder that plainly exists — `list_mailboxes` returns both and the tool description says which is which. `label` is optional because the shape is persisted in localStorage from before it existed.
+- **The `Date` header is written by the SENDER.** It is preferred, as every mail client does — but only while plausible (under a day in the future, after 1990), or a spammer pins itself to the top of a date-sorted list. Sorting is by date client-side, not by uid: uid order is arrival order *in that mailbox*, which is wrong for anything filed, moved or imported.
 - **Message bodies render as PLAIN TEXT** — never markdown, never `dangerouslySetInnerHTML`, and links are deliberately not clickable. `mime.ts` has already flattened any HTML part; widening this to rendered markup would hand a stranger's mail a foothold in a webview holding the session.
 - **Never log a request or response** in `worker/src/routes/mail.ts` or `mail.rs` — same rule as `dav.ts`, higher stakes: an inbox carries every other service's reset links.
 
@@ -220,6 +226,7 @@ src/
                  derive · <Name>Widget    # one file per Today card
         assistant/  useAssistantChat · MessageList · Composer · AssistantPopup
   views/       Today · Calendar · Reminders · Todos · Notes · People · Mail · Assistant · Settings · Search
+test/          # unit tests for pure client logic (not in tsconfig — see npm test)
 e2e/           # WebDriver specs (real app only; not in tsconfig)
 packages/shared/  # zod schemas + inferred types, matchQuery ranking, normalizeKey,
                   # DATA_TABLES. Imported by BOTH sides; no Cloudflare/Tauri imports.

@@ -582,7 +582,9 @@
     "attachmentsHint": "Attachments are listed but can't be opened here — use Mail or iCloud.com.",
     "showingAll_one": "{{count}} message.",
     "showingAll_other": "{{count}} messages.",
-    "showingNewest": "Showing the {{count}} newest of {{total}} matches."
+    "loadOlder": "Load older",
+    "showingOf": "Showing {{count}} of {{total}}.",
+    "showingCapped": "Showing {{count}}. This mailbox has {{total}} matches — more than can be paged through here."
   },
   "assistant": {
     "title": "AI Assistant",

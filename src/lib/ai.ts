@@ -895,7 +895,9 @@ const MAIL_TOOLS = [
       name: "list_mailboxes",
       description:
         "List the mailboxes (folders) in the user's connected iCloud inbox. Use it only when you need a " +
-        "mailbox name other than INBOX — searching the inbox needs no call to this.",
+        "mailbox name other than INBOX — searching the inbox needs no call to this. Each result has a " +
+        "`name` and a `label`: pass `name` back verbatim as the `mailbox` argument, and say `label` to " +
+        "the user.",
       parameters: { type: "object", properties: {} },
     },
   },
@@ -1224,7 +1226,14 @@ async function toolListMailboxes() {
   if (!account) return { error: "No inbox is connected. Tell the user to connect one in Settings → Mail." };
   try {
     const folders = await listFolders(account);
-    return { total: folders.length, results: folders.map((f) => f.name) };
+    // Both, on purpose. `name` is the only thing `search_mail` will accept —
+    // it is what the server called the mailbox — while `label` is the same
+    // name out of IMAP's modified UTF-7, so a folder called 日本語 does not
+    // reach the model as `&ZeVnLIqe-` and get described to the user that way.
+    return {
+      total: folders.length,
+      results: folders.map((f) => ({ name: f.name, label: f.label ?? f.name })),
+    };
   } catch (e) {
     return mailError(e);
   }
@@ -1247,7 +1256,11 @@ async function toolSearchMail(args: Record<string, unknown>) {
     return {
       mailbox: found.mailbox,
       total: found.total,
-      truncated: found.truncated,
+      // Computed, not passed through. `MailSearchResult.truncated` means "the
+      // uid list itself was capped", which is about paging in the UI; what the
+      // model needs to know is the thing every other read tool's `truncated`
+      // says — that it did not see everything that matched.
+      truncated: found.total > found.results.length,
       results: found.results.map((m) => ({
         uid: m.uid,
         mailbox: m.mailbox,

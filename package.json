@@ -17,6 +17,8 @@
     "worker:dev": "npm run dev -w @secondbrain/worker",
     "worker:migrate": "npm run migrate:local -w @secondbrain/worker",
     "typecheck": "tsc --noEmit && npm run typecheck -w @secondbrain/worker",
+    "//test": "Unit tests for pure logic, in test/ rather than src/ because tsconfig includes only src and node:test is not part of a DOM build. E2E (the real app) is test:e2e.",
+    "test": "tsx --test test/*.test.ts && npm test -w @secondbrain/worker",
     "//dev:app": "Used by tauri.conf.json's beforeDevCommand: the app now needs the Worker running too, so apply local D1 migrations (idempotent) and run Vite + the Worker together. -k kills both if either dies, so closing the app stops the Worker.",
     "dev:app": "npm run worker:migrate && concurrently -k -n vite,worker \"vite\" \"npm run worker:dev\""
   },

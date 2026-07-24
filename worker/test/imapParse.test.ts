@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { chooseTextPart, parseFetch, parseTokens, parseBodyStructure } from "../src/imapParse";
+import { ICLOUD_IMAP, MAIL_MAX_RESULTS, mailOpSchema } from "@secondbrain/shared";
+import {
+  chooseTextPart, parseBodyStructure, parseExamine, parseFetch, parseStatus, parseTokens,
+} from "../src/imapParse";
 
 /**
  * BODYSTRUCTURE, against responses shaped like the ones iCloud actually sends.
@@ -134,8 +137,77 @@ test("a whole-message fetch is still raw, not a part", () => {
   assert.equal(msg.partBody, undefined);
 });
 
+test("EXAMINE volunteers the freshness baseline for free", () => {
+  const seen = parseExamine([
+    "* FLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft)",
+    "* 1204 EXISTS",
+    "* 0 RECENT",
+    "* OK [UIDVALIDITY 1517159100] UIDs valid",
+    "* OK [UIDNEXT 9931] Predicted next UID",
+    // A count of unseen messages is what this LOOKS like and is not what it
+    // is — EXAMINE reports the sequence number of the first unseen message.
+    // Reading it as a count gives a plausible wrong number.
+    "* OK [UNSEEN 1198] First unseen",
+  ]);
+  assert.deepEqual(seen, { uidnext: 9931, exists: 1204 });
+  assert.deepEqual(parseExamine(["* OK [READ-ONLY]"]), { uidnext: 0, exists: 0 });
+});
+
+test("STATUS is read by its pairs, not by its mailbox name", () => {
+  assert.deepEqual(
+    parseStatus(['* STATUS "INBOX" (MESSAGES 1204 UIDNEXT 9931 UNSEEN 3)']),
+    { uidnext: 9931, messages: 1204, unseen: 3 },
+  );
+  // A non-ASCII mailbox comes back in the server's own modified UTF-7 and its
+  // own quoting, so matching it against what we sent rejects a correct answer.
+  assert.equal(parseStatus(['* STATUS "&ZeVnLIqe-" (UIDNEXT 42)']).uidnext, 42);
+  assert.deepEqual(parseStatus(["a1 OK done"]), { uidnext: 0, messages: 0, unseen: 0 });
+});
+
 test("junk in, empty out — a structure we cannot read is not a crash", () => {
   assert.deepEqual(parseBodyStructure("NIL"), []);
   assert.deepEqual(parseBodyStructure(structure("()")), []);
   assert.deepEqual(chooseTextPart([]), null);
+});
+
+/**
+ * The op envelope, round-tripped through the schema both TypeScript ends
+ * validate against.
+ *
+ * This is the file's other job. The Rust executor mirrors these shapes by hand
+ * and cannot import them, so the schema is what stops the *two TypeScript* ends
+ * drifting — and an op the client can build but the Worker rejects surfaces as
+ * "expected a mail op", which says nothing about which field was wrong.
+ */
+test("every op the client can build is one the Worker will accept", () => {
+  const creds = { host: ICLOUD_IMAP.host, port: ICLOUD_IMAP.port, user: "a@icloud.com", pass: "x" };
+  for (const op of [
+    { ...creds, op: "list" },
+    { ...creds, op: "status", mailbox: "INBOX" },
+    { ...creds, op: "fetch", mailbox: "INBOX", uid: 991 },
+    { ...creds, op: "headers", mailbox: "INBOX", uids: [3, 2, 1] },
+    { ...creds, op: "search", mailbox: "INBOX", limit: 50, criteria: {} },
+    // The freshness call: same search, restricted to what arrived since.
+    { ...creds, op: "search", mailbox: "INBOX", limit: 50, criteria: { text: ["a", "b"], uid_min: 9931 } },
+  ]) {
+    const parsed = mailOpSchema.safeParse(op);
+    assert.ok(parsed.success, `${op.op} rejected: ${parsed.error?.message}`);
+  }
+});
+
+test("the envelope still refuses what it exists to refuse", () => {
+  const creds = { host: ICLOUD_IMAP.host, port: ICLOUD_IMAP.port, user: "a@icloud.com", pass: "x" };
+  const bad = [
+    // CR/LF is IMAP's command separator — the injection boundary, refused at
+    // the schema before either executor's quoting gets a chance.
+    { ...creds, op: "search", mailbox: "INBOX", limit: 1, criteria: { subject: ["x\r\na1 LOGOUT"] } },
+    { ...creds, op: "search", mailbox: "IN\r\nBOX", limit: 1, criteria: {} },
+    // A phrase is not a term list, and a page is not unbounded.
+    { ...creds, op: "search", mailbox: "INBOX", limit: 1, criteria: { text: "one string" } },
+    { ...creds, op: "headers", mailbox: "INBOX", uids: [] },
+    { ...creds, op: "headers", mailbox: "INBOX", uids: Array(MAIL_MAX_RESULTS + 1).fill(1) },
+    { ...creds, op: "search", mailbox: "INBOX", limit: 1, criteria: { since: "2026-01-01" } },
+    { ...creds, op: "search", mailbox: "INBOX", limit: 1, criteria: { uid_min: 0 } },
+  ];
+  for (const op of bad) assert.equal(mailOpSchema.safeParse(op).success, false, JSON.stringify(op.criteria ?? op));
 });
