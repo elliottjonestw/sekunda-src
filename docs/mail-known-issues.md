@@ -168,17 +168,11 @@ Scoped more tightly than it first appears, and worth stating precisely:
 Inherent to the feature. Not currently said anywhere in the UI — one line under
 the connect button would cover it.
 
-### 3.3 Web sign-in fails with `[AUTHENTICATIONFAILED]` — Unresolved, high
-Desktop works with the same credentials; the two paths send a byte-identical
-`LOGIN`. Two candidates, undistinguished by Apple's response:
-1. The username on web is still the old (non-@icloud.com) address — web has its
-   own `localStorage` and credentials deliberately don't sync.
-2. Apple refusing app-specific-password logins proxied from a Cloudflare
-   datacenter IP.
-
-If (2), **no code change fixes it** and mail becomes desktop-only — in which
-case the web Settings pane should say so rather than offer a button that cannot
-succeed.
+### 3.3 Web sign-in failed with `[AUTHENTICATIONFAILED]` — CLOSED, not a bug
+The Worker had not been deployed with the current code. Web mail works. Kept
+here because the failure mode is worth recognising: Apple's response is the same
+for a wrong password and for a relay problem, so "check your credentials" is not
+a safe conclusion to draw from it.
 
 ### 3.4 The web relay sees the password and the mail — Accepted, high
 TLS terminates at the Worker. Nothing stored, nothing logged, session required,
