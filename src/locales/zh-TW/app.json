@@ -571,6 +571,7 @@
     "download": "下載",
     "delete": "刪除",
     "junk": "移至垃圾郵件",
+    "moveToInbox": "移至收件匣",
     "deleteConfirm": "將此郵件移至垃圾桶？你可以在垃圾桶中復原。",
     "deleteConfirmPermanent": "永久刪除此郵件？此郵件已在垃圾桶中，刪除後無法復原。",
     "attachmentTooLarge": "檔案太大，無法在此下載，請用「郵件」或 iCloud.com 開啟。",

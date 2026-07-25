@@ -5,7 +5,7 @@
  */
 export {
   DEFAULT_MAILBOX, deleteMessage, getMessage, icloudAccount, listFolders, loadHeaders,
-  mailboxStatus, markSeen, moveMessage, moveToJunk, peekMessage,
+  mailboxStatus, markSeen, moveMessage, moveToInbox, moveToJunk, peekMessage,
   resolveJunkMailbox, resolveTrashMailbox, searchMail,
 } from "./mailbox";
 export { clearMailCache } from "./cache";

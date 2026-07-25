@@ -444,6 +444,13 @@ export function moveToJunk(account: MailAccount, uid: number, mailbox = DEFAULT_
   return moveMessage(account, uid, mailbox, resolveJunkMailbox(account));
 }
 
+/** Move one message back to the Inbox — restoring a junked or deleted message.
+ *  `INBOX` is IMAP's one reserved, universal mailbox name, so it needs no
+ *  folder-list resolution the way Junk and Trash do. */
+export function moveToInbox(account: MailAccount, uid: number, mailbox: string): Promise<void> {
+  return moveMessage(account, uid, mailbox, DEFAULT_MAILBOX);
+}
+
 /** A connectable account for the one provider this supports. The host and port
  *  are fixed here rather than typed by the user: they are the allowlist both
  *  executors enforce, so a free-text field could only ever produce a refusal. */

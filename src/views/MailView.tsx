@@ -5,7 +5,7 @@ import { MAIL_MAX_ATTACHMENT_BYTES } from "@secondbrain/shared";
 import { getMailSettings, saveMailSettings, type MailFolder } from "../lib/settings";
 import {
   DEFAULT_MAILBOX, deleteMessage, getMessage, listFolders, loadHeaders, mailboxStatus, markSeen,
-  moveToJunk, peekMessage, resolveJunkMailbox, resolveTrashMailbox, saveAttachment, searchMail,
+  moveToInbox, moveToJunk, peekMessage, resolveJunkMailbox, resolveTrashMailbox, saveAttachment, searchMail,
   type MailAddress, type MailAttachment, type MailboxStatus, type MailMessageDetail,
   type MailMessageSummary,
 } from "../lib/mail";
@@ -127,7 +127,7 @@ export default function MailView({ target }: { target?: MailMessageSummary }) {
   /** The toolbar action in flight, or null — one at a time across every action,
    *  so a double-click (or clicking Delete then Junk) can't fire two moves at
    *  the same message. Carries the uid so the spinner lands on the right button. */
-  const [busy, setBusy] = useState<{ uid: number; action: "delete" | "junk" } | null>(null);
+  const [busy, setBusy] = useState<{ uid: number; action: "delete" | "junk" | "inbox" } | null>(null);
   const [actionError, setActionError] = useState("");
 
   // The typed query only becomes the searched one after it settles.
@@ -420,17 +420,18 @@ export default function MailView({ target }: { target?: MailMessageSummary }) {
   }
 
   /**
-   * Move the open message to Junk.
+   * File the open message into another folder.
    *
-   * No confirmation, unlike delete: it is reversible (the message is in the Junk
-   * folder, not gone) and low-stakes, which is how Apple Mail treats it too.
+   * No confirmation, unlike delete: a move is reversible (the message is in the
+   * other folder, not gone) and low-stakes, which is how Apple Mail treats it
+   * too. Shared by Move to Junk and Move to Inbox.
    */
-  async function moveJunk(summary: MailMessageSummary) {
+  async function runMove(summary: MailMessageSummary, action: "junk" | "inbox", move: () => Promise<void>) {
     if (busy) return;
-    setBusy({ uid: summary.uid, action: "junk" });
+    setBusy({ uid: summary.uid, action });
     setActionError("");
     try {
-      await moveToJunk(account!, summary.uid, summary.mailbox);
+      await move();
       removeFromList(summary);
     } catch (e) {
       setActionError(e instanceof Error ? e.message : String(e));
@@ -438,6 +439,11 @@ export default function MailView({ target }: { target?: MailMessageSummary }) {
       setBusy(null);
     }
   }
+
+  const moveJunk = (summary: MailMessageSummary) =>
+    runMove(summary, "junk", () => moveToJunk(account!, summary.uid, summary.mailbox));
+  const moveInbox = (summary: MailMessageSummary) =>
+    runMove(summary, "inbox", () => moveToInbox(account!, summary.uid, summary.mailbox));
 
   // Open a specific message when navigated here with a target — a hit from the
   // global search bar, which searches the inbox. Only fires once, so it can't
@@ -612,6 +618,17 @@ export default function MailView({ target }: { target?: MailMessageSummary }) {
                   onClick={() => void moveJunk(selected)}
                   disabled={busy !== null}
                   busy={busy?.action === "junk" && busy.uid === selected.uid}
+                />
+              )}
+              {/* Shown only for a junked or deleted message — the way back to
+                  the Inbox. Elsewhere there is nothing to restore. */}
+              {(selected.mailbox === resolveJunkMailbox(account) || selected.mailbox === resolveTrashMailbox(account)) && (
+                <ToolbarButton
+                  icon={<Inbox size={15} />}
+                  label={t("mail.moveToInbox")}
+                  onClick={() => void moveInbox(selected)}
+                  disabled={busy !== null}
+                  busy={busy?.action === "inbox" && busy.uid === selected.uid}
                 />
               )}
             </div>
