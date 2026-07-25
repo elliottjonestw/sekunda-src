@@ -10,6 +10,7 @@
     "reminders": "Reminders",
     "todos": "To-Do",
     "notes": "Notes",
+    "diary": "Diary",
     "people": "People",
     "assistant": "Assistant",
     "settings": "Settings",
@@ -48,6 +49,7 @@
     "reminder": "Reminder",
     "todo": "Todo",
     "note": "Note",
+    "diary": "Diary",
     "person": "Person",
     "email": "Email"
   },
@@ -569,6 +571,18 @@
       "dictating": "Dictating…"
     }
   },
+  "diary": {
+    "todayEntry": "Today's entry",
+    "prevMonth": "Previous month",
+    "nextMonth": "Next month",
+    "searchPlaceholder": "Search entries…",
+    "empty": "No diary entries yet.",
+    "titlePlaceholder": "Title (optional)",
+    "confirmDelete": "Delete this diary entry?",
+    "noEntry": "No entry for {{date}}.",
+    "startWriting": "Start writing",
+    "selectDay": "Pick a day to read or write."
+  },
   "mail": {
     "searchPlaceholder": "Search this mailbox…",
     "unreadOnly": "Unread only",
@@ -662,6 +676,9 @@
     "searchReminders": "Searching reminders…",
     "searchNotes": "Looking through notes…",
     "searchNotesFor": "Searching notes for “{{query}}”…",
+    "searchDiary": "Looking through your diary…",
+    "searchDiaryFor": "Searching your diary for “{{query}}”…",
+    "getDiaryEntry": "Reading your diary…",
     "searchPeople": "Looking through contacts…",
     "searchPeopleFor": "Searching people for “{{query}}”…",
     "getItem": "Fetching details…",
@@ -677,6 +694,7 @@
     "updateReminder": "Updating a reminder…",
     "createNote": "Creating a note…",
     "updateNote": "Updating a note…",
+    "writeDiaryEntry": "Writing in your diary…",
     "createList": "Creating a list…",
     "createPerson": "Adding a contact…",
     "updatePerson": "Updating a contact…",
@@ -687,6 +705,7 @@
     "deleteEvent": "Deleting an event…",
     "deleteReminder": "Deleting a reminder…",
     "deleteNote": "Deleting a note…",
+    "deleteDiaryEntry": "Deleting a diary entry…",
     "deletePerson": "Deleting a contact…",
     "deleteList": "Deleting a list…",
     "working": "Working…",

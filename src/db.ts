@@ -349,9 +349,13 @@ export async function deleteTodo(id: string): Promise<void> {
 // Notes — served by the Worker (M4), including the trigram FTS search. Image
 // bytes live in Workers KV behind the same API (M4b).
 // ---------------------------------------------------------------------------
-export async function listNotes(): Promise<NoteRow[]> {
-  return networkFirst(`notes:${getCurrentSpaceId()}`, () =>
-    apiRequest<NoteRow[]>(spacePath("/notes")),
+/** Notes and diary entries share the `notes` table, discriminated by `kind`.
+ *  Defaulting to "note" means every existing caller (the Notes view, link
+ *  targets, the assistant's note tools) keeps seeing only notes with no change;
+ *  the Diary view passes "diary". */
+export async function listNotes(kind: "note" | "diary" = "note"): Promise<NoteRow[]> {
+  return networkFirst(`notes:${kind}:${getCurrentSpaceId()}`, () =>
+    apiRequest<NoteRow[]>(spacePath(`/notes?kind=${kind}`)),
   );
 }
 
@@ -364,16 +368,28 @@ export async function getNote(id: string): Promise<NoteRow | undefined> {
   }
 }
 
-export type NoteInput = Omit<NoteRow, "id" | "created_at" | "updated_at"> & { id?: string };
+export type NoteInput = Omit<NoteRow, "id" | "kind" | "entry_date" | "created_at" | "updated_at"> & {
+  id?: string;
+  /** 'note' by default; 'diary' for a diary entry. Immutable after creation. */
+  kind?: "note" | "diary";
+  /** A diary entry's day (floating 'YYYY-MM-DD'). Set on create; patched only
+   *  when explicitly provided so an ordinary note save never touches it. */
+  entry_date?: string | null;
+};
 
 export async function upsertNote(input: NoteInput): Promise<string> {
   const fields = { title: input.title, body: input.body, pinned: input.pinned as 0 | 1 };
   if (input.id) {
-    await apiRequest<NoteRow>(spacePath(`/notes/${input.id}`), { method: "PATCH", body: fields });
+    const patch: Record<string, unknown> = { ...fields };
+    if (input.entry_date !== undefined) patch.entry_date = input.entry_date;
+    await apiRequest<NoteRow>(spacePath(`/notes/${input.id}`), { method: "PATCH", body: patch });
     return input.id;
   }
   const id = newId();
-  await apiRequest<NoteRow>(spacePath("/notes"), { method: "POST", body: { id, ...fields } });
+  await apiRequest<NoteRow>(spacePath("/notes"), {
+    method: "POST",
+    body: { id, ...fields, kind: input.kind ?? "note", entry_date: input.entry_date ?? null },
+  });
   return id;
 }
 
@@ -496,15 +512,56 @@ export async function searchEventRows(query: string): Promise<EventRow[]> {
  * the LIKE path still carries sub-3-character queries (most Chinese words).
  * Offline degrades to empty, like the other searches.
  */
-export async function searchNotes(query: string): Promise<NoteRow[]> {
+/** Full-text note search. `kind` scopes to notes or diary; omitting it spans
+ *  both, which is what the global search bar wants. */
+export async function searchNotes(query: string, kind?: "note" | "diary"): Promise<NoteRow[]> {
   const q = query.trim();
   if (!q) return [];
+  const scope = kind ? `&kind=${kind}` : "";
   try {
-    return await apiRequest<NoteRow[]>(spacePath(`/notes?q=${encodeURIComponent(q)}`));
+    return await apiRequest<NoteRow[]>(spacePath(`/notes?q=${encodeURIComponent(q)}${scope}`));
   } catch (e) {
     if (e instanceof OfflineError) return [];
     throw e;
   }
+}
+
+// --- Diary -------------------------------------------------------------------
+// Diary entries are `notes` rows with kind='diary', keyed by a calendar day.
+// One entry per day: helpers here find-or-create by `entry_date` so a day never
+// ends up with two entries.
+
+/** Every diary entry, newest day first. */
+export function listDiary(): Promise<NoteRow[]> {
+  return listNotes("diary");
+}
+
+/** The diary entry for a given day ('YYYY-MM-DD'), or undefined if none yet. */
+export async function getDiaryByDate(date: string): Promise<NoteRow | undefined> {
+  const entries = await listDiary();
+  return entries.find((e) => e.entry_date === date);
+}
+
+/**
+ * Find-or-create the diary entry for a day, then apply a partial patch to it.
+ * Idempotent on the date, so "add to today's diary" never spawns a duplicate.
+ * Returns the entry id.
+ */
+export async function upsertDiaryEntry(
+  date: string,
+  fields: { title?: string | null; body?: string | null },
+): Promise<string> {
+  const existing = await getDiaryByDate(date);
+  if (existing) {
+    await upsertNote({
+      id: existing.id,
+      title: fields.title !== undefined ? fields.title : existing.title,
+      body: fields.body !== undefined ? fields.body : existing.body,
+      pinned: existing.pinned as 0 | 1,
+    });
+    return existing.id;
+  }
+  return upsertNote({ kind: "diary", entry_date: date, pinned: 0, title: fields.title ?? null, body: fields.body ?? null });
 }
 
 // ---------------------------------------------------------------------------

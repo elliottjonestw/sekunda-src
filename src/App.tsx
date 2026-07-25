@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
-import { Home, Calendar, Bell, ListChecks, StickyNote, Users, Search, Brain, Sparkles, Settings as SettingsIcon, LogOut, Menu, Inbox, LucideIcon } from "lucide-react";
+import { Home, Calendar, Bell, ListChecks, StickyNote, NotebookPen, Users, Search, Brain, Sparkles, Settings as SettingsIcon, LogOut, Menu, Inbox, LucideIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import TodayView from "./views/TodayView";
 import CalendarView from "./views/CalendarView";
 import RemindersView from "./views/RemindersView";
 import TodosView from "./views/TodosView";
 import NotesView from "./views/NotesView";
+import DiaryView from "./views/DiaryView";
 import MailView from "./views/MailView";
 import PeopleView from "./views/PeopleView";
 import SearchView from "./views/SearchView";
@@ -22,7 +23,7 @@ import { logout } from "./lib/auth";
 import { applyTheme, watchSystemTheme } from "./lib/theme";
 import { getCachedSession } from "./lib/authStore";
 
-type View = "today" | "calendar" | "reminders" | "todos" | "notes" | "people" | "mail" | "assistant" | "search" | "settings";
+type View = "today" | "calendar" | "reminders" | "todos" | "notes" | "diary" | "people" | "mail" | "assistant" | "search" | "settings";
 
 // Secret keystroke: hold Shift + 8 + 9 together anywhere in the app to open the
 // "load demo data" prompt. Keys are matched by physical code so it works
@@ -37,6 +38,7 @@ const NAV: { id: NavId; icon: LucideIcon }[] = [
   { id: "reminders", icon: Bell },
   { id: "todos", icon: ListChecks },
   { id: "notes", icon: StickyNote },
+  { id: "diary", icon: NotebookPen },
   { id: "people", icon: Users },
   { id: "assistant", icon: Sparkles },
 ];
@@ -56,6 +58,7 @@ export default function App() {
   // on the Today dashboard opens that note). Consumed by the view on mount and
   // cleared on any other navigation so it never mis-fires later.
   const [noteTarget, setNoteTarget] = useState<string | null>(null);
+  const [diaryTarget, setDiaryTarget] = useState<string | null>(null);
   const [calTarget, setCalTarget] = useState<string | null>(null);
   // The occurrence to open, so the calendar can jump to its month first.
   const [calTargetStart, setCalTargetStart] = useState<string | null>(null);
@@ -125,6 +128,7 @@ export default function App() {
   // one is passed for this navigation.
   function navigate(v: View, target?: NavTarget) {
     setNoteTarget(target?.noteId ?? null);
+    setDiaryTarget(target?.diaryDate ?? null);
     setCalTarget(target?.eventId ?? null);
     setCalTargetStart(target?.eventStart ?? null);
     setTodoTarget(target?.todoId ?? null);
@@ -138,7 +142,7 @@ export default function App() {
 
   /** Clear every pending open-target (search box, plain nav). */
   function clearTargets() {
-    setNoteTarget(null); setCalTarget(null); setCalTargetStart(null);
+    setNoteTarget(null); setDiaryTarget(null); setCalTarget(null); setCalTargetStart(null);
     setTodoTarget(null); setReminderTarget(null); setPersonTarget(null);
     setMailTarget(null);
   }
@@ -282,6 +286,7 @@ export default function App() {
         {view === "reminders" && <RemindersView onChange={bump} initialId={reminderTarget ?? undefined} />}
         {view === "todos" && <TodosView onChange={bump} initialId={todoTarget ?? undefined} />}
         {view === "notes" && <NotesView onChange={bump} initialId={noteTarget ?? undefined} />}
+        {view === "diary" && <DiaryView onChange={bump} initialDate={diaryTarget ?? undefined} />}
         {view === "people" && <PeopleView onChange={bump} initialId={personTarget ?? undefined} />}
         {view === "mail" && <MailView target={mailTarget ?? undefined} />}
         {view === "assistant" && (

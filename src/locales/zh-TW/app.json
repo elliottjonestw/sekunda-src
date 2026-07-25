@@ -10,6 +10,7 @@
     "reminders": "提醒事項",
     "todos": "待辦事項",
     "notes": "備忘錄",
+    "diary": "日記",
     "people": "聯絡人",
     "assistant": "助理",
     "settings": "設定",
@@ -48,6 +49,7 @@
     "reminder": "提醒",
     "todo": "待辦",
     "note": "備忘錄",
+    "diary": "日記",
     "person": "聯絡人",
     "email": "電子郵件"
   },
@@ -566,6 +568,18 @@
       "dictating": "聽寫中…"
     }
   },
+  "diary": {
+    "todayEntry": "今天的日記",
+    "prevMonth": "上個月",
+    "nextMonth": "下個月",
+    "searchPlaceholder": "搜尋日記…",
+    "empty": "還沒有日記。",
+    "titlePlaceholder": "標題（可留空）",
+    "confirmDelete": "刪除這篇日記？",
+    "noEntry": "{{date}} 還沒有日記。",
+    "startWriting": "開始撰寫",
+    "selectDay": "選一天來閱讀或撰寫。"
+  },
   "mail": {
     "searchPlaceholder": "搜尋此信箱…",
     "unreadOnly": "僅未讀",
@@ -658,6 +672,9 @@
     "searchReminders": "搜尋提醒事項中…",
     "searchNotes": "瀏覽備忘錄中…",
     "searchNotesFor": "搜尋備忘錄「{{query}}」中…",
+    "searchDiary": "瀏覽日記中…",
+    "searchDiaryFor": "搜尋日記「{{query}}」中…",
+    "getDiaryEntry": "閱讀日記中…",
     "searchPeople": "瀏覽聯絡人中…",
     "searchPeopleFor": "搜尋聯絡人「{{query}}」中…",
     "getItem": "取得詳細資料中…",
@@ -673,6 +690,7 @@
     "updateReminder": "更新提醒事項中…",
     "createNote": "建立備忘錄中…",
     "updateNote": "更新備忘錄中…",
+    "writeDiaryEntry": "撰寫日記中…",
     "createList": "建立清單中…",
     "createPerson": "新增聯絡人中…",
     "updatePerson": "更新聯絡人中…",
@@ -683,6 +701,7 @@
     "deleteEvent": "刪除行程中…",
     "deleteReminder": "刪除提醒事項中…",
     "deleteNote": "刪除備忘錄中…",
+    "deleteDiaryEntry": "刪除日記中…",
     "deletePerson": "刪除聯絡人中…",
     "deleteList": "刪除清單中…",
     "working": "處理中…",

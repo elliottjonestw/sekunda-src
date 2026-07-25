@@ -11,38 +11,40 @@
 // through lib/format so they render correctly in every locale.
 
 import { useEffect, useState } from "react";
-import { Calendar, Bell, ListChecks, StickyNote, Users, LucideIcon } from "lucide-react";
+import { Calendar, Bell, ListChecks, StickyNote, NotebookPen, Users, LucideIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import type { ItemRef, ItemType, NavTarget } from "../types";
+import type { ItemRef, CardType, NavTarget } from "../types";
 import { getTodo, getReminder, getNote, getPerson } from "../db";
 import { getEventByRef, findEventById } from "../lib/calendars";
 import { nextOccurrenceFrom } from "../lib/recurrence";
-import { fmtDateTime, isOverdue, startOfDay } from "../lib/format";
+import { fmtDate, fmtDateTime, isOverdue, startOfDay } from "../lib/format";
 
-export const ITEM_ICON: Record<ItemType, LucideIcon> = {
-  event: Calendar, reminder: Bell, todo: ListChecks, note: StickyNote, person: Users,
+export const ITEM_ICON: Record<CardType, LucideIcon> = {
+  event: Calendar, reminder: Bell, todo: ListChecks, note: StickyNote, diary: NotebookPen, person: Users,
 };
 
 /** Which view opens each item type. */
-export const VIEW_FOR: Record<ItemType, string> = {
-  event: "calendar", reminder: "reminders", todo: "todos", note: "notes", person: "people",
+export const VIEW_FOR: Record<CardType, string> = {
+  event: "calendar", reminder: "reminders", todo: "todos", note: "notes", diary: "diary", person: "people",
 };
 
 /** The nav target that opens this item's detail once its view has mounted. */
 export function targetFor(
-  { type, id, occurrenceStart }: { type: ItemType; id: string; occurrenceStart?: string },
+  { type, id, occurrenceStart, diaryDate }: { type: CardType; id: string; occurrenceStart?: string; diaryDate?: string },
 ): NavTarget {
   switch (type) {
     case "event": return { eventId: id, eventStart: occurrenceStart };
     case "reminder": return { reminderId: id };
     case "todo": return { todoId: id };
     case "note": return { noteId: id };
+    // The Diary view opens by day, not by row id (an entry IS a date).
+    case "diary": return { diaryDate };
     case "person": return { personId: id };
   }
 }
 
 export interface ItemCardProps {
-  type: ItemType;
+  type: CardType;
   label: string;
   sub?: string;
   /** Completed to-do/reminder: dimmed and struck through. */
@@ -128,6 +130,19 @@ async function load(ref: ItemRef, t: (k: any, o?: any) => string): Promise<Loade
       return {
         label: n.title || t("common.untitled"),
         sub: (n.body ?? "").replace(/\s+/g, " ").slice(0, 80),
+        done: false, overdue: false,
+      };
+    }
+    case "diary": {
+      // A diary entry is a note row keyed by its day; the day is the identity, so
+      // it always shows even when the entry has a title.
+      const n = await getNote(ref.id);
+      if (!n || n.kind !== "diary") return null;
+      const date = n.entry_date ? fmtDate(new Date(`${n.entry_date}T00:00:00`)) : "";
+      const title = n.title?.trim();
+      return {
+        label: title || date || t("common.untitled"),
+        sub: title ? date : (n.body ?? "").replace(/\s+/g, " ").slice(0, 80),
         done: false, overdue: false,
       };
     }

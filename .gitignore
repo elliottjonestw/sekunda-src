@@ -21,6 +21,9 @@ dist-ssr
 .dev.vars
 worker/worker-configuration.d.ts
 
+# QA test-account credentials (password + API key). Local only — never commit.
+QA_ACCESS.md
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

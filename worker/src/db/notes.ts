@@ -14,7 +14,7 @@ import { notFound } from "../http";
  * never touch it directly.
  */
 
-const COLUMNS = "id, title, body, pinned, created_at, updated_at";
+const COLUMNS = "id, title, body, pinned, kind, entry_date, created_at, updated_at";
 
 /** Shortest query the trigram tokenizer can answer (see the notes_fts comment
  *  in 0001). Below this, most CJK words included, we fall back to LIKE. */
@@ -25,10 +25,17 @@ export async function listNotes(
   spaceId: string,
   query: NoteQuery,
 ): Promise<NoteRow[]> {
-  if (query.q && query.q.trim()) return searchNotes(db, spaceId, query.q);
+  if (query.q && query.q.trim()) return searchNotes(db, spaceId, query.q, query.kind);
+  // Diary entries are ordered by the day they belong to; notes by recency. When
+  // no kind is given (global search never lists), fall back to the note order.
+  const order = query.kind === "diary"
+    ? "entry_date DESC, updated_at DESC"
+    : "pinned DESC, updated_at DESC";
+  const where = query.kind ? "space_id = ? AND kind = ?" : "space_id = ?";
+  const params = query.kind ? [spaceId, query.kind] : [spaceId];
   const { results } = await db
-    .prepare(`SELECT ${COLUMNS} FROM notes WHERE space_id = ? ORDER BY pinned DESC, updated_at DESC`)
-    .bind(spaceId)
+    .prepare(`SELECT ${COLUMNS} FROM notes WHERE ${where} ORDER BY ${order}`)
+    .bind(...params)
     .all<NoteRow>();
   return results;
 }
@@ -43,10 +50,20 @@ export async function listNotes(
  * the join back to notes is what stops one tenant's search seeing another's
  * note text. That predicate is why this lives in one function.
  */
-async function searchNotes(db: D1Database, spaceId: string, rawQuery: string): Promise<NoteRow[]> {
+async function searchNotes(
+  db: D1Database,
+  spaceId: string,
+  rawQuery: string,
+  kind?: string,
+): Promise<NoteRow[]> {
   const q = rawQuery.trim();
   const terms = queryTerms(q);
   if (terms.length === 0) return [];
+
+  // A kind filter is an extra AND on notes.kind, appended in both paths. Absent,
+  // the search spans notes and diary alike (the global search bar).
+  const kindClause = kind ? " AND kind = ?" : "";
+  const kindParam = kind ? [kind] : [];
 
   const canUseFts = terms.every((t) => [...t].length >= TRIGRAM_MIN);
   if (canUseFts) {
@@ -56,10 +73,10 @@ async function searchNotes(db: D1Database, spaceId: string, rawQuery: string): P
         .prepare(
           `SELECT ${COLUMNS.split(", ").map((c) => `n.${c}`).join(", ")}
            FROM notes n JOIN notes_fts f ON f.rowid = n.rowid
-           WHERE notes_fts MATCH ? AND n.space_id = ?
+           WHERE notes_fts MATCH ? AND n.space_id = ?${kind ? " AND n.kind = ?" : ""}
            ORDER BY rank`,
         )
-        .bind(match, spaceId)
+        .bind(match, spaceId, ...kindParam)
         .all<NoteRow>();
       return results;
     } catch {
@@ -70,8 +87,8 @@ async function searchNotes(db: D1Database, spaceId: string, rawQuery: string): P
   const clause = terms.map(() => "(title LIKE ? ESCAPE '\\' OR body LIKE ? ESCAPE '\\')").join(" AND ");
   const params = terms.flatMap((t) => [`%${escapeLike(t)}%`, `%${escapeLike(t)}%`]);
   const { results } = await db
-    .prepare(`SELECT ${COLUMNS} FROM notes WHERE space_id = ? AND ${clause} ORDER BY updated_at DESC`)
-    .bind(spaceId, ...params)
+    .prepare(`SELECT ${COLUMNS} FROM notes WHERE space_id = ?${kindClause} AND ${clause} ORDER BY updated_at DESC`)
+    .bind(spaceId, ...kindParam, ...params)
     .all<NoteRow>();
   return results;
 }
@@ -90,10 +107,10 @@ export async function createNote(db: D1Database, spaceId: string, input: NoteCre
   const now = new Date().toISOString();
   await db
     .prepare(
-      `INSERT INTO notes (id, space_id, title, body, pinned, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?)`,
+      `INSERT INTO notes (id, space_id, title, body, pinned, kind, entry_date, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?)`,
     )
-    .bind(input.id, spaceId, input.title, input.body, input.pinned, now, now)
+    .bind(input.id, spaceId, input.title, input.body, input.pinned, input.kind, input.entry_date, now, now)
     .run();
 
   const row = await getNote(db, spaceId, input.id);
@@ -101,7 +118,7 @@ export async function createNote(db: D1Database, spaceId: string, input: NoteCre
   return row;
 }
 
-const PATCHABLE = ["title", "body", "pinned"] as const;
+const PATCHABLE = ["title", "body", "pinned", "entry_date"] as const;
 
 export async function updateNote(
   db: D1Database,

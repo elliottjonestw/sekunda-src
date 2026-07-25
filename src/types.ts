@@ -9,19 +9,31 @@ import type { ItemType } from "@secondbrain/shared";
 import type { MailMessageSummary } from "./lib/mail";
 
 /**
+ * The kinds an assistant card (and its search-result cousin) can represent.
+ *
+ * A superset of `ItemType`: a diary entry gets its own card, but it is NOT a
+ * tag/link `ItemType` — diary rows tag and link as `note` (see ITEM_TYPES in
+ * @secondbrain/shared, the boundary the Worker validates path segments against).
+ * So "diary" lives only at the card layer, never in that allowlist.
+ */
+export type CardType = ItemType | "diary";
+
+/**
  * A pointer to one item, used to render it as a card in the assistant chat.
  *
  * Deliberately *only* identity — never the item's fields. The card loads the
  * current row itself so what it shows is the real data, not whatever the model
  * happened to write. For events, `calendarId` says which calendar the id lives
  * in (remote events have no SQLite row) and `occurrenceStart` picks one
- * instance of a recurring series, whose id is shared by every occurrence.
+ * instance of a recurring series, whose id is shared by every occurrence. For a
+ * diary entry, `diaryDate` is its day — the Diary view opens by date, not id.
  */
 export interface ItemRef {
-  type: ItemType;
+  type: CardType;
   id: string;
   calendarId?: string;
   occurrenceStart?: string; // ISO
+  diaryDate?: string; // 'YYYY-MM-DD', diary only
 }
 
 /**
@@ -31,6 +43,9 @@ export interface ItemRef {
  */
 export interface NavTarget {
   noteId?: string;
+  /** A diary day ('YYYY-MM-DD') to open in the Diary view — from a global-search
+   *  hit or a diary item card. The view seeds its cursor month from it. */
+  diaryDate?: string;
   eventId?: string;
   /**
    * ISO start of the occurrence to open. The calendar resolves a target out of

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { CloudOff, Mail } from "lucide-react";
+import { CloudOff, Mail, NotebookPen } from "lucide-react";
 import type { ItemType, GoTo } from "../types";
 import { searchNotes, searchPeople, searchReminders, searchTodos } from "../db";
 import { searchEvents, listCalendars, getCalendar } from "../lib/calendars";
@@ -67,6 +67,9 @@ function windowFor(step: number): [Date, Date] {
 export default function SearchView({ query, goTo }: { query: string; goTo: GoTo }) {
   const { t } = useTranslation();
   const [hits, setHits] = useState<Hit[]>([]);
+  // Diary entries live in the notes table but route to the Diary view by date,
+  // and they aren't an ItemType (no card), so they get their own hit list.
+  const [diaryHits, setDiaryHits] = useState<{ id: string; date: string; label: string; sub: string }[]>([]);
   const [errors, setErrors] = useState<string[]>([]);
   const [step, setStep] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -116,21 +119,35 @@ export default function SearchView({ query, goTo }: { query: string; goTo: GoTo 
 
   useEffect(() => {
     const q = query.trim();
-    if (!q) { setHits([]); setErrors([]); setLoading(false); return; }
+    if (!q) { setHits([]); setDiaryHits([]); setErrors([]); setLoading(false); return; }
 
     // Debounced because a keystroke can now cost a CalDAV round-trip.
     setLoading(true);
     let cancelled = false;
     const timer = setTimeout(() => {
       void (async () => {
-        const [events, reminders, todos, notes, people] = await Promise.all([
+        const [events, reminders, todos, noteRows, people] = await Promise.all([
           searchEvents(q, winStart, winEnd),
           searchReminders(q),
           searchTodos(q),
+          // No kind filter: this is the one place notes and diary are searched
+          // together, then split by kind so each routes to the right view.
           searchNotes(q),
           searchPeople(q),
         ]);
         if (cancelled) return;
+
+        const notes = noteRows.filter((n) => n.kind !== "diary");
+        setDiaryHits(
+          noteRows
+            .filter((n) => n.kind === "diary" && n.entry_date)
+            .map((n) => ({
+              id: n.id,
+              date: n.entry_date as string,
+              label: fmtDate(new Date(`${n.entry_date}T00:00:00`)),
+              sub: n.title?.trim() || (n.body ?? "").slice(0, 60),
+            })),
+        );
 
         setErrors(events.errors);
         setHits([
@@ -161,7 +178,7 @@ export default function SearchView({ query, goTo }: { query: string; goTo: GoTo 
   }, [query, winStart, winEnd, t]);
 
   const canWiden = step < WINDOW_STEPS.length - 1;
-  const nothing = hits.length === 0 && mailHits.length === 0;
+  const nothing = hits.length === 0 && diaryHits.length === 0 && mailHits.length === 0;
   const busy = loading || mailLoading;
 
   return (
@@ -197,6 +214,22 @@ export default function SearchView({ query, goTo }: { query: string; goTo: GoTo 
                   sub={h.sub}
                   onClick={() => goTo(VIEW_FOR[h.type], targetFor(h))}
                 />
+              ))}
+              {/* Diary entries route to the Diary view by date, not through
+                  ItemCard (they aren't an ItemType), so they get their own row. */}
+              {diaryHits.map((d) => (
+                <button
+                  key={`diary|${d.id}`}
+                  onClick={() => goTo("diary", { diaryDate: d.date })}
+                  className="flex w-full items-center gap-3 rounded-lg border border-neutral-200 px-3 py-2 text-left hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
+                >
+                  <NotebookPen size={18} className="shrink-0 text-neutral-500" />
+                  <span className="flex-1 min-w-0">
+                    <span className="block truncate font-medium">{d.label}</span>
+                    {d.sub && <span className="block truncate text-xs text-neutral-400">{d.sub}</span>}
+                  </span>
+                  <span className="shrink-0 text-xs text-neutral-400">{t("nav.diary")}</span>
+                </button>
               ))}
               {/* Mail isn't an ItemType — it has no row, no tags, no links — so
                   it can't go through ItemCard. It gets its own row that opens

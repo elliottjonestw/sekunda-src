@@ -58,6 +58,10 @@ export interface NoteRow {
   title: string | null;
   body: string | null;
   pinned: number;
+  /** 'note' | 'diary'. A diary entry is a note keyed by a calendar day. */
+  kind: string;
+  /** A diary entry's day, a floating wall date ('YYYY-MM-DD'); null for notes. */
+  entry_date: string | null;
   created_at: string | null;
   updated_at: string | null;
 }
@@ -317,10 +321,19 @@ export type EventQuery = z.infer<typeof eventQuerySchema>;
 // body, stored separately (see the note-image schemas below).
 // ---------------------------------------------------------------------------
 
+// A diary entry's day: a floating wall date, no time and no zone, so it stays
+// the same calendar day in every timezone (same reasoning as all-day events).
+const noteKind = z.enum(["note", "diary"]);
+const entryDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Expected YYYY-MM-DD").nullable();
+
 const noteFields = {
   title: z.string().max(2000).nullable(),
   body: z.string().max(1_000_000).nullable(),
   pinned: boolInt,
+  // Optional on the wire, defaulted server-side: an existing client that knows
+  // nothing of diary keeps creating plain notes with no change.
+  kind: noteKind.default("note"),
+  entry_date: entryDate.default(null),
 };
 
 export const noteCreateSchema = z.object({ id: idSchema, ...noteFields });
@@ -329,9 +342,14 @@ export const noteUpdateSchema = z.object({
   title: noteFields.title.optional(),
   body: noteFields.body.optional(),
   pinned: noteFields.pinned.optional(),
+  entry_date: entryDate.optional(),
 });
 
-export const noteQuerySchema = z.object({ q: z.string().max(200).optional() });
+// `kind` filters list/search to notes or diary; absent means both (global search).
+export const noteQuerySchema = z.object({
+  q: z.string().max(200).optional(),
+  kind: noteKind.optional(),
+});
 
 export type NoteCreate = z.infer<typeof noteCreateSchema>;
 export type NoteUpdate = z.infer<typeof noteUpdateSchema>;

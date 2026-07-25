@@ -29,6 +29,7 @@ import {
   matchQuery,
   upsertTodo, upsertReminder, upsertNote, upsertList, tagItem, nowIso,
   deleteTodo, deleteReminder, deleteNote, deleteList,
+  listDiary, getDiaryByDate, upsertDiaryEntry,
   listPeople, getPerson, searchPeople, upsertPerson, deletePerson, createLink, deleteLink,
   ensureCustomField,
 } from "../db";
@@ -395,6 +396,40 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "search_diary",
+      description:
+        "Full-text search over the user's DIARY (journal) entries by keyword, or the most recent entries when no query is given. Each entry belongs to a calendar day. The diary is separate from notes: use this for journaling ('what did I write about my trip', 'my entry last Tuesday'), search_notes for everything else.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: {
+            type: "string",
+            description:
+              "Distinctive keywords for full-text search — not the user's whole phrase. All terms must match.",
+          },
+          limit: { type: "integer", description: `Max results (default ${DEFAULT_LIMIT}, max ${MAX_LIMIT}).` },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_diary_entry",
+      description:
+        "Read the diary entry for a specific day. Returns its title and full body, or that no entry exists yet. Read before writing when the user wants to ADD to a day that may already have an entry — write_diary_entry replaces the fields you pass.",
+      parameters: {
+        type: "object",
+        properties: {
+          date: { type: "string", description: "The day, as YYYY-MM-DD in the user's local timezone." },
+        },
+        required: ["date"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "search_people",
       description:
         "Search the user's contacts (people). Matches name, nickname, organization, and email/phone text. Returns compact records including ids, emails, phones, addresses, websites, custom fields, and notes. When a birthday is known the record also carries `age` (already worked out for today) and `next_birthday` — use those numbers as given; never recompute an age yourself.",
@@ -467,8 +502,8 @@ const TOOLS = [
             items: {
               type: "object",
               properties: {
-                type: { type: "string", enum: ["event", "reminder", "todo", "note", "person"] },
-                id: { type: "string", description: "The item's id, from a search tool." },
+                type: { type: "string", enum: ["event", "reminder", "todo", "note", "diary", "person"] },
+                id: { type: "string", description: "The item's id, from a search tool. For a diary entry, the `id` from search_diary or get_diary_entry." },
                 calendar_id: { type: "string", description: "For events: the calendar_id returned by search_events." },
                 occurrence_start: {
                   type: "string",
@@ -645,6 +680,37 @@ const TOOLS = [
           pinned: { type: "boolean" },
         },
         required: ["id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "write_diary_entry",
+      description:
+        "Create or update the user's diary (journal) entry for a day. Keyed by date: there is at most one entry per day, so this finds the existing entry or creates it. It REPLACES the title/body you pass and leaves the rest — to append to an existing entry, call get_diary_entry first and pass the combined body. Confirm the wording with the user before writing something they dictated loosely.",
+      parameters: {
+        type: "object",
+        properties: {
+          date: { type: "string", description: "The day, as YYYY-MM-DD in the user's local timezone (usually today unless they say otherwise)." },
+          title: { type: "string", description: "Optional short title for the entry." },
+          body: { type: "string", description: "Markdown content of the entry." },
+        },
+        required: ["date"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "delete_diary_entry",
+      description: "Delete the diary entry for a specific day. Permanent.",
+      parameters: {
+        type: "object",
+        properties: {
+          date: { type: "string", description: "The day, as YYYY-MM-DD." },
+        },
+        required: ["date"],
       },
     },
   },
@@ -1189,8 +1255,9 @@ async function toolSearchNotes(args: Record<string, unknown>) {
 
   // Reuse db.ts's searchNotes (remote FTS) rather than reimplementing the query,
   // so the CJK/short-query handling lives in one place. No query lists all notes
-  // via listNotes(). The pinned filter is applied afterwards.
-  const found: any[] = q ? await searchNotes(q) : await listNotes();
+  // via listNotes(). The pinned filter is applied afterwards. Scoped to 'note'
+  // so diary entries never surface here — they have their own tools.
+  const found: any[] = q ? await searchNotes(q, "note") : await listNotes("note");
   const rows = args.pinned === true ? found.filter((n) => n.pinned === 1) : found;
 
   return {
@@ -1611,8 +1678,16 @@ async function toolShowItems(
   for (const entry of raw.slice(0, MAX_SHOWN_ITEMS)) {
     if (!entry || typeof entry !== "object") continue;
     const { type, id, calendar_id, occurrence_start } = entry as Record<string, unknown>;
-    if (typeof type !== "string" || !(type in WRITE_TABLES) || typeof id !== "string" || !id) {
+    // "diary" is a card kind, not a WRITE_TABLES/tag ItemType — allow it too.
+    if (typeof type !== "string" || !(type === "diary" || type in WRITE_TABLES) || typeof id !== "string" || !id) {
       missing.push(`${String(type)} ${String(id)}`);
+      continue;
+    }
+    if (type === "diary") {
+      // A diary entry is a note row; its day (not its id) is how the card routes.
+      const entryRow = await getNote(id);
+      if (!entryRow || entryRow.kind !== "diary") { missing.push(`diary ${id}`); continue; }
+      refs.push({ type: "diary", id, diaryDate: entryRow.entry_date ?? undefined });
       continue;
     }
     if (type === "event") {
@@ -1828,6 +1903,60 @@ async function toolUpdateNote(args: Record<string, unknown>) {
     pinned: "pinned" in args ? (args.pinned ? 1 : 0) : n.pinned,
   });
   return { ok: true, id: n.id };
+}
+
+// --- Diary -----------------------------------------------------------------
+// Diary entries are notes (kind='diary') keyed by a calendar day. These tools
+// keep the day-centric contract the model reasons about; the storage reuse is
+// invisible to it. A date is always a floating 'YYYY-MM-DD'.
+
+const DIARY_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+async function toolSearchDiary(args: Record<string, unknown>) {
+  const limit = clampLimit(args.limit);
+  const q = typeof args.query === "string" ? args.query.trim() : "";
+  const found: any[] = q ? await searchNotes(q, "diary") : await listDiary();
+  return {
+    total: found.length,
+    truncated: found.length > limit,
+    results: found.slice(0, limit).map((n) => ({
+      id: n.id, date: n.entry_date,
+      title: n.title || "",
+      snippet: (n.body ?? "").replace(/\s+/g, " ").slice(0, 400),
+      updated_at: toLocalIso(n.updated_at),
+    })),
+  };
+}
+
+async function toolGetDiaryEntry(args: Record<string, unknown>) {
+  const date = typeof args.date === "string" ? args.date.trim() : "";
+  if (!DIARY_DATE.test(date)) return { error: "Provide a date as YYYY-MM-DD." };
+  const entry = await getDiaryByDate(date);
+  if (!entry) return { date, exists: false };
+  return { date, exists: true, id: entry.id, title: entry.title || "", body: entry.body || "" };
+}
+
+async function toolWriteDiaryEntry(args: Record<string, unknown>) {
+  const date = typeof args.date === "string" ? args.date.trim() : "";
+  if (!DIARY_DATE.test(date)) return { error: "Provide a date as YYYY-MM-DD." };
+  if (typeof args.title !== "string" && typeof args.body !== "string") return { error: "Provide a title and/or body." };
+  // `"field" in args` distinguishes clear-to-null from leave-alone, matching the
+  // other write tools; upsertDiaryEntry preserves any field left undefined.
+  const id = await upsertDiaryEntry(date, {
+    title: "title" in args ? (args.title as string | null) : undefined,
+    body: "body" in args ? (args.body as string | null) : undefined,
+  });
+  return { ok: true, id, date };
+}
+
+async function toolDeleteDiaryEntry(args: Record<string, unknown>, ctx: ToolContext) {
+  const date = typeof args.date === "string" ? args.date.trim() : "";
+  if (!DIARY_DATE.test(date)) return { error: "Provide a date as YYYY-MM-DD." };
+  const entry = await getDiaryByDate(date);
+  if (!entry) return { error: `No diary entry for ${date}.` };
+  if (!(await confirmBeforeDelete(ctx, "note", entry.id, `Diary — ${date}`))) return DENIED;
+  await deleteNote(entry.id);
+  return { ok: true, deleted: { type: "diary", id: entry.id, date } };
 }
 
 async function toolCreateList(args: Record<string, unknown>) {
@@ -2086,6 +2215,8 @@ async function executeTool(
     case "list_calendars": return toolListCalendars();
     case "search_reminders": return toolSearchReminders(args);
     case "search_notes": return toolSearchNotes(args);
+    case "search_diary": return toolSearchDiary(args);
+    case "get_diary_entry": return toolGetDiaryEntry(args);
     case "search_people": return toolSearchPeople(args);
     case "get_item": return toolGetItem(args);
     case "get_weather": return toolGetWeather(args);
@@ -2104,6 +2235,7 @@ async function executeTool(
     case "update_reminder": return toolUpdateReminder(args);
     case "create_note": return toolCreateNote(args);
     case "update_note": return toolUpdateNote(args);
+    case "write_diary_entry": return toolWriteDiaryEntry(args);
     case "create_list": return toolCreateList(args);
     case "create_person": return toolCreatePerson(args);
     case "update_person": return toolUpdatePerson(args);
@@ -2115,6 +2247,7 @@ async function executeTool(
     case "delete_event": return toolDeleteEvent(args, ctx);
     case "delete_reminder": return toolDeleteReminder(args, ctx);
     case "delete_note": return toolDeleteNote(args, ctx);
+    case "delete_diary_entry": return toolDeleteDiaryEntry(args, ctx);
     case "delete_person": return toolDeletePerson(args, ctx);
     case "delete_list": return toolDeleteList(args, ctx);
     default: return { error: `Unknown tool: ${name}` };
@@ -2130,6 +2263,8 @@ function statusFor(name: string, args: Record<string, unknown>): string {
     case "list_calendars": return i18next.t("status.listCalendars");
     case "search_reminders": return i18next.t("status.searchReminders");
     case "search_notes": return args.query ? i18next.t("status.searchNotesFor", { query: String(args.query) }) : i18next.t("status.searchNotes");
+    case "search_diary": return args.query ? i18next.t("status.searchDiaryFor", { query: String(args.query) }) : i18next.t("status.searchDiary");
+    case "get_diary_entry": return i18next.t("status.getDiaryEntry");
     case "search_people": return args.query ? i18next.t("status.searchPeopleFor", { query: String(args.query) }) : i18next.t("status.searchPeople");
     case "get_item": return i18next.t("status.getItem");
     case "get_weather": return i18next.t("status.weather");
@@ -2153,6 +2288,7 @@ function statusFor(name: string, args: Record<string, unknown>): string {
     case "update_reminder": return i18next.t("status.updateReminder");
     case "create_note": return i18next.t("status.createNote");
     case "update_note": return i18next.t("status.updateNote");
+    case "write_diary_entry": return i18next.t("status.writeDiaryEntry");
     case "create_list": return i18next.t("status.createList");
     case "create_person": return i18next.t("status.createPerson");
     case "update_person": return i18next.t("status.updatePerson");
@@ -2163,6 +2299,7 @@ function statusFor(name: string, args: Record<string, unknown>): string {
     case "delete_event": return i18next.t("status.deleteEvent");
     case "delete_reminder": return i18next.t("status.deleteReminder");
     case "delete_note": return i18next.t("status.deleteNote");
+    case "delete_diary_entry": return i18next.t("status.deleteDiaryEntry");
     case "delete_person": return i18next.t("status.deletePerson");
     case "delete_list": return i18next.t("status.deleteList");
     default: return i18next.t("status.working");
@@ -2171,15 +2308,19 @@ function statusFor(name: string, args: Record<string, unknown>): string {
 
 const SYSTEM_PROMPT =
   "You are a helpful personal assistant embedded in a local life-management app called Sekunda. " +
-  "You help the user with THEIR data — calendar events, reminders, to-dos, notes, people (contacts), lists, and tags.\n\n" +
+  "You help the user with THEIR data — calendar events, reminders, to-dos, notes, a dated diary (journal), people (contacts), lists, and tags.\n\n" +
   "You can READ, WRITE, and DELETE data:\n" +
-  "- Read/lookup tools: get_overview, search_todos, search_events, list_calendars, search_reminders, search_notes, search_people, get_item, get_weather.\n" +
+  "- Read/lookup tools: get_overview, search_todos, search_events, list_calendars, search_reminders, search_notes, search_diary, get_diary_entry, search_people, get_item, get_weather.\n" +
   "- Create/update tools: create_todo, update_todo, create_event, update_event, create_reminder, " +
-  "update_reminder, create_note, update_note, create_list, create_person, update_person, add_tag.\n" +
+  "update_reminder, create_note, update_note, write_diary_entry, create_list, create_person, update_person, add_tag.\n" +
   "- Linking tools: link_items / unlink_items connect any two items (e.g. attach a person to an event, " +
   "or a note to a to-do). People are contacts with emails/phones/addresses, a birthday, and user-defined " +
   "custom_fields (label/value, e.g. 'Eye color: Blue').\n" +
-  "- Delete tools: delete_todo, delete_event, delete_reminder, delete_note, delete_person, delete_list.\n" +
+  "- Delete tools: delete_todo, delete_event, delete_reminder, delete_note, delete_diary_entry, delete_person, delete_list.\n" +
+  "- The DIARY is a private journal keyed by day (one entry per date), separate from notes. Use the diary tools " +
+  "for journaling ('what did I do last weekend', 'add to today's diary'); use write_diary_entry with a YYYY-MM-DD " +
+  "date (default today). Diary entries can be shown as cards with show_items (type \"diary\", the id from a diary " +
+  "search) just like any other item.\n" +
   "- Presentation: show_items displays items to the user as cards. Call it BEFORE writing a reply that talks " +
   "about specific items.\n\n" +
   "Calendars:\n" +
@@ -2490,10 +2631,19 @@ export interface AskOptions {
 async function shownItemsNote(items: ItemRef[]): Promise<string> {
   const lines = await Promise.all(items.map(async (it) => {
     let label = "";
-    try { label = await getItemLabel(it.type, it.id); } catch { /* best-effort */ }
+    try {
+      // Diary isn't an ItemType getItemLabel knows; its label is title-or-day.
+      if (it.type === "diary") {
+        const n = await getNote(it.id);
+        label = n?.title?.trim() || n?.entry_date || "";
+      } else {
+        label = await getItemLabel(it.type, it.id);
+      }
+    } catch { /* best-effort */ }
     const parts = [`${it.type} "${label || "?"}"`, `id=${it.id}`];
     if (it.calendarId) parts.push(`calendar_id=${it.calendarId}`);
     if (it.occurrenceStart) parts.push(`occurrence_start=${it.occurrenceStart}`);
+    if (it.diaryDate) parts.push(`date=${it.diaryDate}`);
     return `- ${parts.join(", ")}`;
   }));
   return (
