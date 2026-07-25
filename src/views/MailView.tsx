@@ -4,8 +4,8 @@ import { useTranslation } from "react-i18next";
 import { MAIL_MAX_ATTACHMENT_BYTES } from "@secondbrain/shared";
 import { getMailSettings, saveMailSettings, type MailFolder } from "../lib/settings";
 import {
-  DEFAULT_MAILBOX, deleteMessage, getMessage, listFolders, loadHeaders, mailboxStatus, markSeen,
-  moveToInbox, moveToJunk, peekMessage, resolveJunkMailbox, resolveTrashMailbox, saveAttachment, searchMail,
+  byDateDescending, DEFAULT_MAILBOX, deleteMessage, getMessage, listFolders, loadHeaders, mailboxStatus,
+  markSeen, moveToInbox, moveToJunk, peekMessage, resolveJunkMailbox, resolveTrashMailbox, saveAttachment, searchMail,
   type MailAddress, type MailAttachment, type MailboxStatus, type MailMessageDetail,
   type MailMessageSummary,
 } from "../lib/mail";
@@ -257,7 +257,12 @@ export default function MailView({ target }: { target?: MailMessageSummary }) {
         await load();
         return;
       }
-      setMessages((current) => [...found.results, ...current]);
+      // Re-sort by DATE after merging, not just prepend: a message *moved* into
+      // this mailbox (Move to Inbox) has a fresh high uid but an old Date, so it
+      // is a new arrival by uid yet belongs lower down by date. The uid snapshot
+      // stays uid-ordered (highest first) for paging; only the display sorts by
+      // date, exactly as the first page already does.
+      setMessages((current) => byDateDescending([...found.results, ...current]));
       setUids((current) => [...found.uids, ...current]);
       setTotal((current) => current + found.uids.length);
     } catch {

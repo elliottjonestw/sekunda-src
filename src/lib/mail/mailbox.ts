@@ -236,8 +236,14 @@ export async function mailboxStatus(
  * rule, moved by hand, or imported from another account arrives in whatever
  * order the copy happened, so an Archive folder sorted by uid is in no order a
  * person recognises. Undated messages sink rather than sorting as 1970.
+ *
+ * Exported because the view has to re-apply it after merging new arrivals into
+ * a list on screen: a message *moved* into the mailbox (Move to Inbox) gets a
+ * fresh high uid but keeps its old Date, so it is "new" by uid and old by date.
+ * Prepending it by uid would float it above genuinely newer mail; re-sorting
+ * the merged list puts it back where its date belongs.
  */
-function byDateDescending(messages: MailMessageSummary[]): MailMessageSummary[] {
+export function byDateDescending(messages: MailMessageSummary[]): MailMessageSummary[] {
   return [...messages].sort((a, b) => {
     if (!a.date || !b.date) return a.date ? -1 : b.date ? 1 : 0;
     return b.date.localeCompare(a.date);
