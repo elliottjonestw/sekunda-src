@@ -43,6 +43,8 @@ on:
     paths:
       - "src/**"
       - "packages/shared/**"
+      # PWA icons and other static assets that vite copies into the bundle.
+      - "public/**"
       - "index.html"
       - "vite.config.ts"
       - "package.json"

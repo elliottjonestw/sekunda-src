@@ -7,6 +7,15 @@
          the elements that would otherwise sit beneath them pad themselves with
          env(safe-area-inset-*). -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <!-- PWA (web build only; ignored by the Tauri webview that packages the
+         same file). The web-app-manifest link is injected by vite-plugin-pwa at
+         build time. iOS Safari ignores most of the manifest, so the standalone
+         behaviour, title and home-screen icon are declared here instead. -->
+    <meta name="theme-color" content="#2563eb" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Sekunda" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <title>Sekunda</title>
   </head>
 

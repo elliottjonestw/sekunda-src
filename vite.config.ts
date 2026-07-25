@@ -1,5 +1,6 @@
 import { defineConfig, loadEnv, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
+import { VitePWA } from "vite-plugin-pwa";
 
 // @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
@@ -74,6 +75,12 @@ function contentSecurityPolicy(apiUrl: string): string {
     "media-src 'self' blob:",
     `connect-src ${connect.join(" ")}`,
     "object-src 'none'",
+    // The web build installs as a PWA: the manifest and the generated service
+    // worker are both same-origin. Stated explicitly so a future tightening of
+    // `default-src`/`script-src` can't silently break install/registration.
+    // Both are inert inside Tauri — the SW is only registered when !isTauri().
+    "manifest-src 'self'",
+    "worker-src 'self'",
     "base-uri 'self'",
     // Nothing in this app posts a form anywhere. Saying so closes the classic
     // "inject a form, exfiltrate the DOM" path that survives a strict
@@ -107,7 +114,68 @@ export default defineConfig(async ({ mode }) => {
     loadEnv(mode, process.cwd(), "").VITE_API_URL ?? "http://localhost:8787";
 
   return {
-    plugins: [react(), cspPlugin(apiUrl)],
+    plugins: [
+      react(),
+      // Makes the WEB build installable as a PWA (Android/iOS "Add to Home
+      // Screen"). Emits a service worker + web-app manifest into dist/.
+      //
+      // The same dist/ is what Tauri packages, so both are written to be inert
+      // on the desktop: the SW is registered only when `!isTauri()` (see
+      // src/lib/registerSW.ts, wired from main.tsx), and the manifest link is
+      // harmless in a webview that ignores it.
+      //
+      // Base-path safe: the plugin applies Vite's resolved `base` (the web
+      // deploy passes `--base=/sekunda-web/`) to the SW scope and the
+      // navigate-fallback, and the manifest's start_url/scope/icons are given
+      // relative so they resolve against wherever the manifest is served.
+      VitePWA({
+        // We register the SW ourselves so it can be gated on `!isTauri()`.
+        injectRegister: false,
+        // New assets are hashed, so a new SW precaches them and takes over
+        // (skipWaiting + clientsClaim) without forcing a mid-session reload —
+        // the fresh bundle loads on the next visit. Avoids clobbering
+        // in-progress note edits (see the note editor's debounced writes).
+        registerType: "autoUpdate",
+        workbox: {
+          globPatterns: ["**/*.{js,css,html,svg,png,ico,webmanifest,woff2}"],
+          // Serve the app shell for any navigation offline. This is the SPA
+          // fallback the deploy's 404.html provides online; the plugin applies
+          // `base`, so it resolves to `<base>index.html`.
+          navigateFallback: "index.html",
+          // The SW touches ONLY same-origin static assets. Every API call
+          // (Worker, OpenAI, iCloud relay, Open-Meteo, Turnstile) is left to
+          // the network and the app's own offline layer (networkFirst /
+          // lib/cache.ts). Critically, this keeps authed responses — which can
+          // carry the OpenAI key, iCloud password and refresh token's context
+          // on a shared github.io origin — out of Cache Storage.
+          navigateFallbackDenylist: [/^\/v1\//],
+        },
+        manifest: {
+          name: "Sekunda",
+          short_name: "Sekunda",
+          description:
+            "Calendar, reminders, notes, diary and people — with an optional AI assistant.",
+          // Relative so they resolve against the manifest's own URL, immune to
+          // the deploy's base path.
+          start_url: ".",
+          scope: ".",
+          display: "standalone",
+          background_color: "#ffffff",
+          theme_color: "#2563eb",
+          icons: [
+            { src: "icon-192.png", sizes: "192x192", type: "image/png" },
+            { src: "icon-512.png", sizes: "512x512", type: "image/png" },
+            {
+              src: "icon-maskable-512.png",
+              sizes: "512x512",
+              type: "image/png",
+              purpose: "maskable",
+            },
+          ],
+        },
+      }),
+      cspPlugin(apiUrl),
+    ],
 
     // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
     //
