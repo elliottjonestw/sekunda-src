@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { CloudOff, Mail, NotebookPen } from "lucide-react";
+import { CloudOff, NotebookPen } from "lucide-react";
 import type { ItemType, GoTo } from "../types";
 import { searchNotes, searchPeople, searchReminders, searchTodos } from "../db";
 import { searchEvents, listCalendars, getCalendar } from "../lib/calendars";
 import { getMailSettings } from "../lib/settings";
-import { searchMail, type MailAddress, type MailMessageSummary } from "../lib/mail";
+import { searchMail, type MailMessageSummary } from "../lib/mail";
 import { fmtDate, fmtDateTime, startOfDay, endOfDay } from "../lib/format";
 import { ItemCard, VIEW_FOR, targetFor } from "../components/ItemCard";
+import { MailCard } from "../components/MailCard";
 import { Button } from "../components/ui";
 
 interface Hit {
@@ -46,12 +47,6 @@ const WINDOW_STEPS: { back: number; ahead: number }[] = [
  */
 const MAIL_DEBOUNCE_MS = 500;
 const MAIL_SEARCH_LIMIT = 25;
-
-function senderLabel(from: MailAddress[]): string {
-  const first = from[0];
-  if (!first) return "";
-  return first.name ?? first.address;
-}
 
 /** Whole days, so the window is stable between keystrokes and hits the 60s
  *  per-calendar cache in calendars.ts instead of refetching on every character. */
@@ -235,20 +230,7 @@ export default function SearchView({ query, goTo }: { query: string; goTo: GoTo 
                   it can't go through ItemCard. It gets its own row that opens
                   the message in the Mail reader, carrying the summary itself. */}
               {mailHits.map((m) => (
-                <button
-                  key={`mail|${m.mailbox}|${m.uid}`}
-                  onClick={() => goTo("mail", { mail: m })}
-                  className="flex w-full items-center gap-3 rounded-lg border border-neutral-200 px-3 py-2 text-left hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
-                >
-                  <Mail size={18} className="shrink-0 text-neutral-500" />
-                  <span className="flex-1 min-w-0">
-                    <span className="block truncate font-medium">{m.subject || t("common.untitled")}</span>
-                    <span className="block truncate text-xs text-neutral-400">
-                      {[senderLabel(m.from), m.date ? fmtDateTime(m.date) : ""].filter(Boolean).join(" · ")}
-                    </span>
-                  </span>
-                  <span className="shrink-0 text-xs text-neutral-400">{t("itemType.email")}</span>
-                </button>
+                <MailCard key={`mail|${m.mailbox}|${m.uid}`} msg={m} onClick={() => goTo("mail", { mail: m })} />
               ))}
             </div>
           )}

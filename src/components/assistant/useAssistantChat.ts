@@ -23,13 +23,16 @@ import {
   startRecording, transcribe, speak, stopSpeaking, isSpeechSupported, isRecordingSupported, Recording,
 } from "../../lib/voice";
 import type { ItemRef } from "../../types";
+import type { MailMessageSummary } from "../../lib/mail";
 
-/** A chat message plus the items the assistant chose to show alongside it.
+/** A chat message plus the items the assistant chose to show alongside it, and
+ *  any emails it read in full (mail has no ItemRef — no row to reload — so the
+ *  summary is carried directly, as NavTarget.mail does).
  *  ai.ts strips everything but role/content before calling the API, so the
  *  extra fields never reach the model. `uiId` is a client-only stable key so
  *  MessageList doesn't have to fall back to array-index keys (which reorder
  *  badly when an aborted user turn is sliced off the end mid-transcript). */
-export type UiMessage = ChatMessage & { items?: ItemRef[]; uiId: number };
+export type UiMessage = ChatMessage & { items?: ItemRef[]; mail?: MailMessageSummary[]; uiId: number };
 
 /**
  * How long to wait for speech to begin before showing the reply anyway.
@@ -192,6 +195,10 @@ export function useAssistantChat({ messages, setMessages, spaceEnabled = true }:
     // the reply once it arrives. Same key the cards render with.
     const shown: ItemRef[] = [];
     const seen = new Set<string>();
+    // Emails the assistant read in full this turn, de-duped by mailbox|uid (the
+    // only key that identifies a message), shown as cards beneath the reply.
+    const shownMail: MailMessageSummary[] = [];
+    const seenMail = new Set<string>();
     try {
       const reply = await askAssistant(next, {
         onStatus: setStatus,
@@ -204,6 +211,12 @@ export function useAssistantChat({ messages, setMessages, spaceEnabled = true }:
             seen.add(key);
             shown.push(it);
           }
+        },
+        onMail: (msg) => {
+          const key = `${msg.mailbox}|${msg.uid}`;
+          if (seenMail.has(key)) return;
+          seenMail.add(key);
+          shownMail.push(msg);
         },
         // The delete gate. Returns a Promise that hangs until the user clicks
         // Delete/Cancel on the confirmation card — which is exactly the pause
@@ -223,6 +236,7 @@ export function useAssistantChat({ messages, setMessages, spaceEnabled = true }:
       const showReply = () =>
         setMessages([...next, {
           role: "assistant", content: reply, items: shown.length ? shown : undefined,
+          mail: shownMail.length ? shownMail : undefined,
           uiId: nextUiId++,
         }]);
 

@@ -41,7 +41,7 @@ import {
   type EventDraft,
 } from "./calendars";
 import { getSettings, getMailSettings, hasMailAccount, type AppSettings } from "./settings";
-import { getMessage, listFolders, searchMail } from "./mail";
+import { getMessage, listFolders, searchMail, type MailMessageSummary } from "./mail";
 import { getOpenAiKey } from "./secrets";
 // Same live-fetch path the Today card uses, cache included — an assistant
 // question right after that card rendered costs no second request.
@@ -211,6 +211,15 @@ export interface ToolContext {
    * that has no UI to confirm against.
    */
   onConfirmDelete?: (req: ConfirmDeleteRequest) => Promise<boolean>;
+  /**
+   * A message the assistant read in full, so the UI can show a card for it —
+   * the mail equivalent of `show_items`, but automatic and out-of-band: mail is
+   * not an `ItemType`, has no local row, and never goes through `show_items`.
+   * Carries the whole summary (not an id) because there is nothing to reload it
+   * from, which is what the Mail reader opens on click. Only `get_message` fires
+   * it; a bare search shows no card. Absent for a headless caller.
+   */
+  onMail?: (msg: MailMessageSummary) => void;
 }
 
 async function getRowById(table: string, id: unknown): Promise<any | null> {
@@ -1344,13 +1353,21 @@ async function toolSearchMail(args: Record<string, unknown>) {
   }
 }
 
-async function toolGetMessage(args: Record<string, unknown>) {
+async function toolGetMessage(args: Record<string, unknown>, ctx: ToolContext = {}) {
   const account = mailAccount();
   if (!account) return { error: "No inbox is connected. Tell the user to connect one in Settings → Mail." };
   const uid = typeof args.uid === "number" ? args.uid : Number(args.uid);
   if (!Number.isInteger(uid) || uid <= 0) return { error: "uid is required, as returned by search_mail." };
   try {
     const msg = await getMessage(account, uid, typeof args.mailbox === "string" ? args.mailbox : undefined);
+    // Show the user a card for the message the assistant just read. Only the
+    // summary fields — the card reopens it in Mail, it does not re-render the
+    // body here. MailMessageDetail is a superset of MailMessageSummary.
+    ctx.onMail?.({
+      uid: msg.uid, mailbox: msg.mailbox, subject: msg.subject,
+      from: msg.from, to: msg.to, date: msg.date,
+      seen: msg.seen, flagged: msg.flagged, size: msg.size,
+    });
     return {
       uid: msg.uid,
       mailbox: msg.mailbox,
@@ -2223,7 +2240,7 @@ async function executeTool(
     case "web_search": return toolWebSearch(args, ctx);
     case "list_mailboxes": return toolListMailboxes();
     case "search_mail": return toolSearchMail(args);
-    case "get_message": return toolGetMessage(args);
+    case "get_message": return toolGetMessage(args, ctx);
     // presentation
     case "show_items": return toolShowItems(args, emitItems);
     // write
@@ -2444,8 +2461,9 @@ const MAIL_PROMPT =
   "- Search results carry no body text. If the answer is inside a message, call get_message before " +
   "answering; never infer the contents from a subject line.\n" +
   "- A uid only means anything in the mailbox it came from. Pass that mailbox back to get_message.\n" +
-  "- Mail is not one of the user's items, so it never goes to show_items — there are no cards for messages. " +
-  "Answer in prose, naming the sender and roughly when it arrived.\n" +
+  "- Mail is not one of the user's items, so it never goes to show_items. When you open a message with " +
+  "get_message the user is automatically shown a card for it that opens it in their mail reader — you do " +
+  "nothing for that, and you still answer in prose, naming the sender and roughly when it arrived.\n" +
   "- Email is private and often sensitive. Answer the question that was asked; do not read out addresses, " +
   "links, codes or quoted passages that were not asked for, and never repeat a verification code or a " +
   "password reset link.\n" +
@@ -2596,6 +2614,13 @@ export interface AskOptions {
    * May fire more than once per turn; treat each batch as an addition.
    */
   onItems?: (items: ItemRef[]) => void;
+  /**
+   * A message the assistant read in full this turn, so a card can be shown for
+   * it. Fires once per `get_message`; may fire more than once a turn. Mail has
+   * no `ItemRef` (no row to reload), so this carries the summary itself — the
+   * same thing the Mail reader opens. A bare `search_mail` does not fire it.
+   */
+  onMail?: (msg: MailMessageSummary) => void;
   /** Abort the in-flight turn. Checked between rounds and passed to fetch. */
   signal?: AbortSignal;
   /**
@@ -2729,6 +2754,7 @@ export async function askAssistant(history: ChatMessage[], opts: AskOptions = {}
     signal: opts.signal,
     onConfirmDelete: opts.onConfirmDelete,
     onUsage: opts.onUsage,
+    onMail: opts.onMail,
     // Absent when the feature is off, which is what makes a model that invents
     // the tool name anyway get a clean "it's switched off" rather than a search.
     webSearchesLeft: webSearch ? { n: MAX_WEB_SEARCHES } : undefined,

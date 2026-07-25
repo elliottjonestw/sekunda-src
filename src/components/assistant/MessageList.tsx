@@ -11,6 +11,7 @@ import remarkGfm from "remark-gfm";
 import { useTranslation } from "react-i18next";
 import { Button } from "../ui";
 import { ItemRefCard, VIEW_FOR, targetFor } from "../ItemCard";
+import { MailCard } from "../MailCard";
 import ConfirmDeleteCard from "./ConfirmDeleteCard";
 import type { ConfirmDeleteRequest } from "../../lib/ai";
 import type { GoTo } from "../../types";
@@ -91,13 +92,23 @@ export default function MessageList({
             </div>
             {/* Outside the bubble so the cards get the full column width.
                 A recurring series shares one id, so the occurrence is part of the key. */}
-            {m.items && m.items.length > 0 && (
+            {((m.items && m.items.length > 0) || (m.mail && m.mail.length > 0)) && (
               <div className="mt-2 space-y-1">
-                {m.items.map((it) => (
+                {m.items?.map((it) => (
                   <ItemRefCard
                     key={`${it.type}:${it.id}:${it.occurrenceStart ?? ""}`}
                     item={it}
                     onOpen={(r) => goTo(VIEW_FOR[r.type], targetFor(r))}
+                  />
+                ))}
+                {/* Emails the assistant read in full. Mail has no ItemRef, so
+                    the summary is carried directly and the card opens it in the
+                    Mail reader — the same NavTarget.mail global search uses. */}
+                {m.mail?.map((msg) => (
+                  <MailCard
+                    key={`mail|${msg.mailbox}|${msg.uid}`}
+                    msg={msg}
+                    onClick={() => goTo("mail", { mail: msg })}
                   />
                 ))}
               </div>
