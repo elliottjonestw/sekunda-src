@@ -30,6 +30,17 @@ import { z } from "zod";
  *     Implementing that twice — once in Rust, once in a V8 isolate — is two
  *     parsers to keep in step and two sets of bugs; this way the desktop and web
  *     paths cannot disagree about what a message says.
+ *
+ * **Read-only is now SCOPED, not absolute.** For most of this feature's life
+ * every op opened its mailbox with EXAMINE and fetched with BODY.PEEK, so the
+ * *server itself* refused any mutation regardless of our code. Two write ops
+ * now exist — `mark_seen` and `delete` — added deliberately for the reader UI,
+ * never for the assistant. The read ops are unchanged (still EXAMINE-only); the
+ * two write ops are the exception, and each issues exactly ONE constrained
+ * mutation (set/clear `\Seen`, or move-to-Trash / expunge-from-Trash). The
+ * executors take no arbitrary flag or command from the client, and the AI tool
+ * layer builds none of these ops, so the assistant still cannot change a
+ * mailbox. See the headers of `worker/src/imap.ts` and `src-tauri/src/mail.rs`.
  */
 
 /**
@@ -236,6 +247,42 @@ export const mailOpSchema = z.discriminatedUnion("op", [
     uid: z.number().int().min(1),
     part: imapPartNumber,
   }),
+  /**
+   * Set (or clear) `\Seen` on one message — the reader's mark-as-read.
+   *
+   * The FIRST write op in this feature's history. It opens the mailbox with
+   * SELECT rather than EXAMINE and issues `UID STORE … FLAGS (\Seen)`, and it
+   * exists ONLY for the UI: clicking a message marks it read. The assistant
+   * never builds this op, so `get_message` still cannot change a flag — reading
+   * mail aloud leaves it unread, which is the whole point of keeping this
+   * separate from `fetch` rather than folding a "mark read" into it.
+   */
+  z.object({
+    ...credentials,
+    op: z.literal("mark_seen"),
+    mailbox: mailboxName,
+    uid: z.number().int().min(1),
+    seen: z.boolean(),
+  }),
+  /**
+   * Move one message to Trash — the reader's delete.
+   *
+   * Reversible by design: `UID MOVE` to the account's Trash folder, matching
+   * what Apple Mail does, rather than a `\Deleted`+EXPUNGE that is gone for
+   * good. `trash` is the destination mailbox the client resolved from its
+   * folder list; it is validated as a mailbox name (CR/LF-refused) and quoted
+   * by the executor exactly like `mailbox`. The one exception is deleting a
+   * message that is ALREADY in Trash, where there is nowhere further to move it
+   * — the executor detects `mailbox === trash` and expunges it for real, which
+   * is what a user emptying their Trash means.
+   */
+  z.object({
+    ...credentials,
+    op: z.literal("delete"),
+    mailbox: mailboxName,
+    uid: z.number().int().min(1),
+    trash: mailboxName,
+  }),
 ]);
 
 export type MailOp = z.infer<typeof mailOpSchema>;
@@ -386,6 +433,15 @@ export type MailOpResult =
       unseen: number;
     }
   | { op: "fetch"; uidvalidity: number; message: ImapMessageResult }
+  | {
+      op: "mark_seen";
+      uidvalidity: number;
+      /** The message's flags AFTER the STORE, as the server reported them, so
+       *  the client learns the real state rather than assuming the write took.
+       *  Empty when the server answered SILENT or the message had vanished. */
+      flags: string[];
+    }
+  | { op: "delete"; uidvalidity: number }
   | {
       op: "part";
       uidvalidity: number;

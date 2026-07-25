@@ -196,9 +196,19 @@ is its own project.
 - **The "Read-only" marker is hidden below `md`** — FIXED (phase 2). It was
   hidden exactly where it is needed most.
 - **No threading**, **no unread counts**, **no unified search**, **nothing
-  offline**, **read state diverges from Apple Mail** — ACCEPTED, and now
-  **declared in the README** rather than left to be rediscovered. Each has a
-  reason there; the last is the accepted cost of the read-only decision.
+  offline** — ACCEPTED, and now **declared in the README** rather than left to
+  be rediscovered. Each has a reason there.
+- **No write path of any kind** — SUPERSEDED. This was the decision the whole
+  design rested on, and reads still hold to it (`EXAMINE` + `BODY.PEEK`, the
+  server enforcing it). Two writes were then added deliberately, for the reader
+  UI only: **mark-as-read** on open (`UID STORE \Seen`) and **delete**
+  (`UID MOVE` to Trash, or an expunge from Trash). They open the mailbox
+  read-write and issue exactly one constrained mutation each; the assistant
+  builds neither, so its read-only guarantee is unchanged. This also closes the
+  old **"read state diverges from Apple Mail"** cost — opening a message here now
+  marks it read there. The new posture: reads are protocol-enforced read-only,
+  writes are two named ops, and the relay/command headers say so where the old
+  blanket claim lived.
 - **No inline images** — still true. Message bodies render as plain text and
   widening that is not a rendering choice but a security one.
 - **iCloud's `TEXT` search may not index bodies** — **OPEN, still unverified.**

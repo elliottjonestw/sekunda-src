@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, Download, Inbox, Loader2, Paperclip, RefreshCw } from "lucide-react";
+import { ArrowLeft, Download, Inbox, Loader2, Paperclip, RefreshCw, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { MAIL_MAX_ATTACHMENT_BYTES } from "@secondbrain/shared";
 import { getMailSettings, saveMailSettings, type MailFolder } from "../lib/settings";
 import {
-  DEFAULT_MAILBOX, getMessage, listFolders, loadHeaders, mailboxStatus, peekMessage,
-  saveAttachment, searchMail,
+  DEFAULT_MAILBOX, deleteMessage, getMessage, listFolders, loadHeaders, mailboxStatus, markSeen,
+  peekMessage, resolveTrashMailbox, saveAttachment, searchMail,
   type MailAddress, type MailAttachment, type MailboxStatus, type MailMessageDetail,
   type MailMessageSummary,
 } from "../lib/mail";
@@ -28,9 +28,11 @@ import { useFirstLoad, firstLoadScreen, SlowLoad } from "../components/ViewGate"
  *     trap `searchEvents` documents for CalDAV: a keystroke is a network call).
  *   - **Opened messages are remembered for the life of the view**, so clicking
  *     back and forth between two messages doesn't re-fetch either.
- *   - **There are no actions.** No delete, no archive, no mark-as-read, no
- *     reply — the connection is opened read-only at the protocol level, so the
- *     absence of buttons here matches what the server would allow anyway.
+ *   - **Two write actions, and only two: mark-as-read and delete.** Opening a
+ *     message marks it read (`markSeen`); the message view has a Delete button
+ *     that moves it to Trash (`deleteMessage`). Both are UI-only — the assistant
+ *     builds neither op, so asking it to read mail never changes a flag. There
+ *     is still no archive, no move, no reply, and no send.
  */
 
 /** Long enough that typing a word is one query, short enough to feel live. */
@@ -86,6 +88,10 @@ export default function MailView({ target }: { target?: MailMessageSummary }) {
    *  spend a rate-limit budget by double-clicking. */
   const [downloading, setDownloading] = useState("");
   const [downloadError, setDownloadError] = useState("");
+  /** The uid being deleted, or null — one at a time, and it gates the button so
+   *  a double-click can't fire two moves at the same message. */
+  const [deleting, setDeleting] = useState<number | null>(null);
+  const [deleteError, setDeleteError] = useState("");
 
   // The typed query only becomes the searched one after it settles.
   useEffect(() => {
@@ -295,10 +301,34 @@ export default function MailView({ target }: { target?: MailMessageSummary }) {
     }
   }
 
+  /**
+   * Mark the opened message read — the reader's one automatic write.
+   *
+   * Optimistic: the unread dot and the bold subject clear the instant the
+   * message is opened, in the list and in the header, and the server write runs
+   * in the background. A failed write is swallowed on purpose — a flag that
+   * didn't stick must never surface an error over a message the user is reading,
+   * and the next STATUS/refresh will correct the dot. Deliberately separate from
+   * `getMessage`, which the assistant also calls: reading mail aloud leaves it
+   * unread.
+   */
+  function markRead(summary: MailMessageSummary) {
+    if (summary.seen) return;
+    const seenNow = { seen: true };
+    setSelected((current) => (current?.uid === summary.uid ? { ...current, ...seenNow } : current));
+    setMessages((current) => current.map((m) => (m.uid === summary.uid && m.mailbox === summary.mailbox ? { ...m, ...seenNow } : m)));
+    setDetail((current) => (current?.uid === summary.uid ? { ...current, ...seenNow } : current));
+    void markSeen(account!, summary.uid, summary.mailbox).catch(() => {
+      /* a flag that didn't take is a cosmetic dot; the next STATUS corrects it */
+    });
+  }
+
   async function open(summary: MailMessageSummary) {
     setSelected(summary);
     setDetailError("");
     setDownloadError("");
+    setDeleteError("");
+    markRead(summary);
     // Asked synchronously, because `getMessage` is async even on a hit: showing
     // a loading state and replacing it in the next tick is a flicker on every
     // click between two already-read messages. The view keeps no cache of its
@@ -314,6 +344,34 @@ export default function MailView({ target }: { target?: MailMessageSummary }) {
       setDetailError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoadingDetail(false);
+    }
+  }
+
+  /**
+   * Delete the open message — moved to Trash, reversible.
+   *
+   * Confirmed first (`window.confirm` works in this WKWebView; `window.prompt`
+   * does not — see CLAUDE.md), then removed from the list snapshot and its uid
+   * dropped so paging stays in step. The confirm wording is stronger when the
+   * message is already in Trash, where the delete op expunges it for good.
+   */
+  async function remove(summary: MailMessageSummary) {
+    if (deleting !== null) return;
+    const inTrash = summary.mailbox === resolveTrashMailbox(account!);
+    if (!window.confirm(t(inTrash ? "mail.deleteConfirmPermanent" : "mail.deleteConfirm"))) return;
+    setDeleting(summary.uid);
+    setDeleteError("");
+    try {
+      await deleteMessage(account!, summary.uid, summary.mailbox);
+      setMessages((current) => current.filter((m) => !(m.uid === summary.uid && m.mailbox === summary.mailbox)));
+      setUids((current) => current.filter((u) => u !== summary.uid));
+      setTotal((current) => Math.max(0, current - 1));
+      setSelected(null);
+      setDetail(null);
+    } catch (e) {
+      setDeleteError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDeleting(null);
     }
   }
 
@@ -461,11 +519,29 @@ export default function MailView({ target }: { target?: MailMessageSummary }) {
 
         {selected && (
           <div className="mx-auto w-full max-w-3xl p-4 md:p-8">
-            <div className="mb-4 flex items-center gap-2 md:hidden">
-              <Button onClick={() => { setSelected(null); setDetail(null); }}>
-                <span className="flex items-center gap-1.5"><ArrowLeft size={15} /> {t("common.back")}</span>
-              </Button>
+            <div className="mb-4 flex items-center gap-2">
+              <div className="md:hidden">
+                <Button onClick={() => { setSelected(null); setDetail(null); }}>
+                  <span className="flex items-center gap-1.5"><ArrowLeft size={15} /> {t("common.back")}</span>
+                </Button>
+              </div>
+              <button
+                onClick={() => void remove(selected)}
+                disabled={deleting !== null}
+                title={t("mail.delete")}
+                aria-label={t("mail.delete")}
+                className="ml-auto flex items-center gap-1.5 rounded-lg border border-neutral-200 px-2.5 py-1.5 text-sm text-neutral-500 hover:border-red-300 hover:bg-red-50 hover:text-red-600 disabled:opacity-50 dark:border-neutral-600 dark:hover:border-red-800 dark:hover:bg-red-950/40"
+              >
+                {deleting === selected.uid
+                  ? <Loader2 size={15} className="animate-spin" />
+                  : <Trash2 size={15} />}
+                <span className="hidden sm:inline">{t("mail.delete")}</span>
+              </button>
             </div>
+
+            {deleteError && (
+              <p className="mb-4 rounded-lg bg-red-50 p-3 text-sm leading-relaxed text-red-600 dark:bg-red-950/40">{deleteError}</p>
+            )}
 
             <h1 className="mb-2 text-xl font-bold leading-snug">{selected.subject}</h1>
             <div className="mb-4 space-y-0.5 border-b border-neutral-200 pb-4 text-sm text-neutral-500 dark:border-neutral-700">

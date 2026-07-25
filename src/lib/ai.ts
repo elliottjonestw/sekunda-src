@@ -2193,8 +2193,11 @@ const MAIL_PROMPT =
   "- A name in a mail question is a SENDER, so it goes to `from`. If that comes back empty, try the same " +
   "words in `query` before concluding anything — `from` matches the sender line only, while `query` also " +
   "reaches the subject and the body. Only say there is no such mail after BOTH have come back empty.\n" +
-  "- It is READ-ONLY. You cannot send, reply, forward, delete, file or mark anything as read. If the user " +
-  "asks for any of those, say plainly that you can only read their mail.\n" +
+  "- YOU are READ-ONLY: you cannot send, reply, forward, delete, file or mark anything as read, and reading " +
+  "a message with get_message does NOT mark it read. Deleting and marking-read exist, but only as buttons in " +
+  "the user's own mail reader — so if they ask you to delete a message or mark it read, tell them to open it " +
+  "on the Mail page and use the Delete button (or that opening it there marks it read); do not imply it is " +
+  "impossible, and never claim you did it.\n" +
   "- search_mail returns the most RECENT matches, not the best ones — the server has no ranking. Say \"the " +
   "latest\" rather than implying you weighed them.\n" +
   "- Search results carry no body text. If the answer is inside a message, call get_message before " +

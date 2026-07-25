@@ -19,8 +19,14 @@
 //!     it, any script that reaches the IPC bridge gets a general-purpose TCP
 //!     client running outside the webview's origin rules — the same reason
 //!     `capabilities/default.json` carries no blanket http scope.
-//!   * **Read-only.** EXAMINE, never SELECT; BODY.PEEK, never BODY. The server
-//!     itself then refuses anything that would change the mailbox.
+//!   * **Reads are read-only; writes are two named ops.** Every READ op opens
+//!     the mailbox with EXAMINE and fetches with BODY.PEEK, so the server itself
+//!     refuses any change a read path could ask for. Two WRITE ops exist,
+//!     deliberately, for the reader UI: `mark_seen` (SELECT + `UID STORE …
+//!     FLAGS (\Seen)`) and `delete` (SELECT + `UID MOVE` to Trash, or an expunge
+//!     when already in Trash). Each issues one constrained mutation and takes no
+//!     arbitrary flag or command from the caller. The AI tool layer builds none
+//!     of these, so the assistant is read-only regardless of this command.
 //!   * **No logging, ever.** This function holds the user's app-specific
 //!     password and their mail. There is no `println!` here and there must
 //!     never be one.
@@ -131,6 +137,24 @@ pub enum MailOp {
         uid: u32,
         part: String,
     },
+    /// Set (or clear) `\Seen` on one message — the reader's mark-as-read. The
+    /// first write op: SELECT (not EXAMINE) + `UID STORE … FLAGS (\Seen)`.
+    MarkSeen {
+        #[serde(flatten)]
+        creds: Credentials,
+        mailbox: String,
+        uid: u32,
+        seen: bool,
+    },
+    /// Move one message to Trash — the reader's delete. `UID MOVE` to the
+    /// account's Trash folder, reversible; an expunge when already in Trash.
+    Delete {
+        #[serde(flatten)]
+        creds: Credentials,
+        mailbox: String,
+        uid: u32,
+        trash: String,
+    },
 }
 
 impl MailOp {
@@ -142,6 +166,8 @@ impl MailOp {
             MailOp::Headers { creds, .. } => creds,
             MailOp::Status { creds, .. } => creds,
             MailOp::Part { creds, .. } => creds,
+            MailOp::MarkSeen { creds, .. } => creds,
+            MailOp::Delete { creds, .. } => creds,
         }
     }
 }
@@ -239,6 +265,14 @@ pub enum OpResult {
     Fetch {
         uidvalidity: u32,
         message: Message,
+    },
+    MarkSeen {
+        uidvalidity: u32,
+        /// The message's flags after the STORE, as the server reported them.
+        flags: Vec<String>,
+    },
+    Delete {
+        uidvalidity: u32,
     },
     Part {
         uidvalidity: u32,
@@ -1166,6 +1200,46 @@ async fn run_op(conn: &mut Conn, op: &MailOp) -> Result<OpResult, String> {
             })
         }
 
+        // The two WRITE ops. They open the mailbox with SELECT (read-write)
+        // rather than EXAMINE, and they are the only ops that do — see the
+        // module header. SELECT shares EXAMINE's response grammar, so
+        // `parse_examine` reads its UIDVALIDITY for the cache key just the same.
+        MailOp::MarkSeen { mailbox, uid, seen, .. } => {
+            reject_control(mailbox, "Mailbox names")?;
+            let (.., uidvalidity) =
+                parse_examine(&conn.command(&[Arg::Text("SELECT ".into()), astring(mailbox)]).await?);
+            // Non-SILENT: the untagged FETCH the server sends back carries the
+            // resulting flags, so the client learns the real state instead of
+            // trusting the write took. `\Seen` is a system flag, a literal — not
+            // a caller value — so there is nothing here to quote or inject.
+            let sign = if *seen { "+" } else { "-" };
+            let lines = conn
+                .command(&[Arg::Text(format!("UID STORE {} {}FLAGS (\\Seen)", uid, sign))])
+                .await?;
+            let flags = parse_fetch(&lines).into_iter().next().map(|m| m.flags).unwrap_or_default();
+            Ok(OpResult::MarkSeen { uidvalidity, flags })
+        }
+
+        MailOp::Delete { mailbox, uid, trash, .. } => {
+            reject_control(mailbox, "Mailbox names")?;
+            reject_control(trash, "Mailbox names")?;
+            let (.., uidvalidity) =
+                parse_examine(&conn.command(&[Arg::Text("SELECT ".into()), astring(mailbox)]).await?);
+            if mailbox == trash {
+                // Already in Trash: nowhere further to move it, so this is the
+                // real, permanent removal a user emptying Trash means. Expunge
+                // only that uid (UIDPLUS) so a concurrent delete elsewhere can't
+                // take an unrelated message with it.
+                conn.command(&[Arg::Text(format!("UID STORE {} +FLAGS (\\Deleted)", uid))]).await?;
+                conn.command(&[Arg::Text(format!("UID EXPUNGE {}", uid))]).await?;
+            } else {
+                // The common case: move to Trash, reversible. `trash` is quoted
+                // exactly like `mailbox`.
+                conn.command(&[Arg::Text(format!("UID MOVE {} ", uid)), astring(trash)]).await?;
+            }
+            Ok(OpResult::Delete { uidvalidity })
+        }
+
         MailOp::Search {
             mailbox,
             criteria,
@@ -1650,6 +1724,30 @@ mod tests {
         assert!(structure("NIL").is_empty());
         assert!(structure("()").is_empty());
         assert!(choose_text_part(&[]).is_none());
+    }
+
+    /// The two write ops issue exactly one constrained mutation each, and this
+    /// pins their command shape. `\Seen` and `\Deleted` are system-flag literals
+    /// (never caller values), the uid is a validated integer interpolated as
+    /// everywhere else, and a mailbox name goes through `astring` — so a crafted
+    /// Trash name is quoted, not command syntax. Mirrors the same intent in
+    /// `worker/src/imap.ts`.
+    #[test]
+    fn write_ops_build_the_expected_commands() {
+        assert_eq!(format!("UID STORE {} {}FLAGS (\\Seen)", 991, "+"), "UID STORE 991 +FLAGS (\\Seen)");
+        assert_eq!(format!("UID STORE {} {}FLAGS (\\Seen)", 991, "-"), "UID STORE 991 -FLAGS (\\Seen)");
+        assert_eq!(format!("UID STORE {} +FLAGS (\\Deleted)", 991), "UID STORE 991 +FLAGS (\\Deleted)");
+        assert_eq!(format!("UID EXPUNGE {}", 991), "UID EXPUNGE 991");
+        // A Trash mailbox name is a quoted astring; anything trying to break out
+        // is escaped inside the quotes rather than run as syntax.
+        match astring("Deleted Messages") {
+            Arg::Text(t) => assert_eq!(t, "\"Deleted Messages\""),
+            Arg::Literal(_) => panic!("an ASCII mailbox name should be quoted"),
+        }
+        match astring("x\" UID EXPUNGE 1:*") {
+            Arg::Text(t) => assert_eq!(t, "\"x\\\" UID EXPUNGE 1:*\""),
+            Arg::Literal(_) => panic!("ASCII should be quoted, not a literal"),
+        }
     }
 
     #[test]

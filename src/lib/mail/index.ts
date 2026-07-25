@@ -4,7 +4,8 @@
  * parser are implementation details, and the credential read lives behind them.
  */
 export {
-  DEFAULT_MAILBOX, getMessage, icloudAccount, listFolders, loadHeaders, mailboxStatus, peekMessage, searchMail,
+  DEFAULT_MAILBOX, deleteMessage, getMessage, icloudAccount, listFolders, loadHeaders,
+  mailboxStatus, markSeen, peekMessage, resolveTrashMailbox, searchMail,
 } from "./mailbox";
 export { clearMailCache } from "./cache";
 export { saveAttachment } from "./download";

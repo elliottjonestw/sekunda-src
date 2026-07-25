@@ -190,6 +190,9 @@ test("every op the client can build is one the Worker will accept", () => {
     // The freshness call: same search, restricted to what arrived since.
     { ...creds, op: "search", mailbox: "INBOX", limit: 50, criteria: { text: ["a", "b"], uid_min: 9931 } },
     { ...creds, op: "part", mailbox: "INBOX", uid: 991, part: "2.1" },
+    // The two write ops — the reader's mark-as-read and delete.
+    { ...creds, op: "mark_seen", mailbox: "INBOX", uid: 991, seen: true },
+    { ...creds, op: "delete", mailbox: "INBOX", uid: 991, trash: "Deleted Messages" },
   ]) {
     const parsed = mailOpSchema.safeParse(op);
     assert.ok(parsed.success, `${op.op} rejected: ${parsed.error?.message}`);
@@ -218,6 +221,10 @@ test("the envelope still refuses what it exists to refuse", () => {
     { ...creds, op: "part", mailbox: "INBOX", uid: 1, part: "01" },
     { ...creds, op: "part", mailbox: "INBOX", uid: 1, part: "1." },
     { ...creds, op: "part", mailbox: "INBOX", uid: 1, part: "" },
+    // The delete op's Trash destination is a mailbox name, so CR/LF is refused
+    // there too — it is interpolated into a `UID MOVE … <trash>` command.
+    { ...creds, op: "delete", mailbox: "INBOX", uid: 1, trash: "Trash\r\na1 LOGOUT" },
+    { ...creds, op: "mark_seen", mailbox: "INBOX", uid: 1, seen: "yes" },
   ];
   for (const op of bad) assert.equal(mailOpSchema.safeParse(op).success, false, JSON.stringify(op.criteria ?? op));
 });

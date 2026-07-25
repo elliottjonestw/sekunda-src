@@ -23,14 +23,20 @@ export { ImapError };
  * is built on `net`/`tls` and an EventEmitter stack that a V8 isolate does not
  * have, so "just use a library" is not an option here — and the alternative,
  * shipping a compatibility layer, would be far more code than the subset this
- * app needs. That subset is: LOGIN, LIST, EXAMINE, UID SEARCH, UID FETCH,
- * LOGOUT. Nothing writes.
+ * app needs. That subset is: LOGIN, LIST, EXAMINE, UID SEARCH, UID FETCH — plus,
+ * for the two write ops below, SELECT, UID STORE, UID MOVE and UID EXPUNGE — and
+ * LOGOUT.
  *
- * **EXAMINE, never SELECT.** EXAMINE opens a mailbox read-only, so the server
- * itself refuses anything that would change it. That is what makes "read-only"
- * a property of the connection rather than a promise about our own code: even a
- * bug here cannot mark a message as read, move it, or expunge it. Body fetches
- * use BODY.PEEK for the same reason (plain BODY[] sets \Seen).
+ * **Reads use EXAMINE, never SELECT; writes are two named ops and nothing else.**
+ * Every READ op (`search`, `fetch`, `headers`, `part`, `status`) opens its
+ * mailbox with EXAMINE and fetches with BODY.PEEK, so the server itself refuses
+ * anything that would change the mailbox — a bug on a read path still cannot
+ * mark, move or expunge a message. Two WRITE ops exist, added deliberately for
+ * the reader UI: `mark_seen` (SELECT + `UID STORE … FLAGS (\Seen)`) and `delete`
+ * (SELECT + `UID MOVE` to Trash, or an expunge when already in Trash). Each
+ * issues exactly one constrained mutation; neither takes an arbitrary flag or
+ * command from the caller. The AI tool layer builds none of these, so the
+ * assistant remains read-only regardless of what this client can do.
  *
  * The protocol details that bite, all handled below:
  *   - **Literals.** Any response line may end with `{n}` meaning "n raw bytes
@@ -374,6 +380,40 @@ async function runOp(conn: ImapConnection, op: MailOp): Promise<MailOpResult> {
         "STATUS ", astring(op.mailbox), " (UIDVALIDITY UIDNEXT MESSAGES UNSEEN)",
       ])),
     };
+  }
+
+  // The two WRITE ops. They open the mailbox with SELECT (read-write) rather
+  // than EXAMINE, and they are the only ops that do — see the header note. Both
+  // return before the EXAMINE below, so a read and a write never both open.
+  if (op.op === "mark_seen") {
+    // SELECT shares EXAMINE's response grammar, so parseExamine reads its
+    // UIDVALIDITY for the cache key just the same.
+    const selected = parseExamine(await conn.command(["SELECT ", astring(op.mailbox)]));
+    // Non-SILENT on purpose: the untagged FETCH the server sends back carries
+    // the resulting flags, so the client learns the real state instead of
+    // trusting that the write took. `\Seen` is a system flag — a literal, not a
+    // caller value — so there is nothing here to quote or inject through.
+    const stored = parseFetch(await conn.command([
+      `UID STORE ${op.uid} ${op.seen ? "+" : "-"}FLAGS (\\Seen)`,
+    ]))[0];
+    return { op: "mark_seen", uidvalidity: selected.uidvalidity, flags: stored?.flags ?? [] };
+  }
+
+  if (op.op === "delete") {
+    const selected = parseExamine(await conn.command(["SELECT ", astring(op.mailbox)]));
+    if (op.mailbox === op.trash) {
+      // Already in Trash: there is nowhere further to move it, so this is the
+      // real, permanent removal a user emptying their Trash means. Mark it
+      // \Deleted, then expunge only that uid (UIDPLUS) so a concurrent delete
+      // elsewhere can't take an unrelated message with it.
+      await conn.command([`UID STORE ${op.uid} +FLAGS (\\Deleted)`]);
+      await conn.command([`UID EXPUNGE ${op.uid}`]);
+    } else {
+      // The common case: move to Trash, reversible. `trash` is a mailbox name
+      // the client resolved; it is quoted exactly like `mailbox`.
+      await conn.command([`UID MOVE ${op.uid} `, astring(op.trash)]);
+    }
+    return { op: "delete", uidvalidity: selected.uidvalidity };
   }
 
   // Read-only. The server enforces it from here on — see the header note.

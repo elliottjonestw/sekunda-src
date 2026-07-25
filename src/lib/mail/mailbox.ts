@@ -4,7 +4,8 @@ import {
 } from "@secondbrain/shared";
 import type { MailAccount, MailFolder } from "../settings";
 import {
-  cachedMessage, cachedSearch, noteUidValidity, rememberMessage, rememberSearch,
+  cachedMessage, cachedSearch, forgetMessage, markMessageSeen,
+  noteUidValidity, rememberMessage, rememberSearch,
 } from "./cache";
 import { imapCall } from "./client";
 import {
@@ -334,6 +335,73 @@ export async function getMessage(
   };
   rememberMessage(account.username, mailbox, result.uidvalidity, detail);
   return detail;
+}
+
+/**
+ * Mark one message read (or unread) — the reader's mark-as-read.
+ *
+ * A WRITE, and the first this module makes. Deliberately NOT folded into
+ * `getMessage`: the assistant reads mail through `getMessage` too, and reading
+ * mail aloud must not change its flags. So this is a separate call the UI makes
+ * and the assistant never does.
+ *
+ * The cache is patched from the server's own answer (the flags it reports after
+ * the STORE) rather than from the boolean we asked for, so a read state that
+ * survives navigation is the one the server actually holds.
+ */
+export async function markSeen(
+  account: MailAccount,
+  uid: number,
+  mailbox = DEFAULT_MAILBOX,
+  seen = true,
+): Promise<void> {
+  const result = await imapCall(account, { op: "mark_seen", mailbox, uid, seen });
+  if (result.op !== "mark_seen") throw new MailError("The mail server answered the wrong question.");
+  noteUidValidity(account.username, mailbox, result.uidvalidity);
+  // The server's reported flags win, but only when it actually reported some: a
+  // STORE that answered without a FLAGS list (or SILENT) must not be read as
+  // "now unseen" and undo the very change we just made — fall back to what we
+  // asked for.
+  const actualSeen = result.flags.length > 0
+    ? result.flags.map((f) => f.toLowerCase()).includes("\\seen")
+    : seen;
+  markMessageSeen(account.username, mailbox, uid, actualSeen);
+}
+
+/**
+ * The account's Trash folder, where a deleted message is moved.
+ *
+ * Resolved from the folder list the account already carries (LISTed on connect
+ * and refreshed on mount): the SPECIAL-USE `\Trash` flag if the server sends
+ * one, else a folder named like Trash, else iCloud's own "Deleted Messages".
+ * The fallback is safe because the executors are iCloud-only anyway.
+ */
+export function resolveTrashMailbox(account: MailAccount): string {
+  const folders = account.folders ?? [];
+  const byFlag = folders.find((f) => f.flags.some((fl) => fl.toLowerCase() === "\\trash"));
+  if (byFlag) return byFlag.name;
+  const byName = folders.find((f) => /deleted messages|trash/i.test(f.label ?? f.name));
+  return byName?.name ?? "Deleted Messages";
+}
+
+/**
+ * Delete one message — moved to Trash, reversible.
+ *
+ * Also a WRITE. `UID MOVE` to the account's Trash folder (an expunge when the
+ * message is already in Trash — see the `delete` op). On success the message is
+ * dropped from the cache and the mailbox's cached search pages are invalidated,
+ * because their uid lists now name a message that has moved.
+ */
+export async function deleteMessage(
+  account: MailAccount,
+  uid: number,
+  mailbox = DEFAULT_MAILBOX,
+): Promise<void> {
+  const trash = resolveTrashMailbox(account);
+  const result = await imapCall(account, { op: "delete", mailbox, uid, trash });
+  if (result.op !== "delete") throw new MailError("The mail server answered the wrong question.");
+  noteUidValidity(account.username, mailbox, result.uidvalidity);
+  forgetMessage(account.username, mailbox, uid);
 }
 
 /** A connectable account for the one provider this supports. The host and port
