@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, Download, Inbox, Loader2, Paperclip, RefreshCw, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { MAIL_MAX_ATTACHMENT_BYTES } from "@secondbrain/shared";
@@ -46,6 +46,42 @@ function senderLabel(from: MailAddress[]): string {
   const first = from[0];
   if (!first) return "";
   return first.name ?? first.address;
+}
+
+/**
+ * One button in the open-message toolbar.
+ *
+ * A single style so Delete — and the actions still to come (Move to Junk,
+ * Summarize, Reply) — read as one row rather than a pile of one-off buttons.
+ * `danger` is the destructive tint (Delete); `busy` swaps the icon for a
+ * spinner. The label collapses to icon-only below `sm`, where the pane is
+ * narrow, but stays in the accessible name.
+ */
+function ToolbarButton({
+  icon, label, onClick, disabled = false, danger = false, busy = false,
+}: {
+  icon: ReactNode;
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+  danger?: boolean;
+  busy?: boolean;
+}) {
+  const tone = danger
+    ? "text-neutral-600 hover:bg-red-50 hover:text-red-600 dark:text-neutral-300 dark:hover:bg-red-950/40 dark:hover:text-red-400"
+    : "text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800";
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={label}
+      aria-label={label}
+      className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm transition-colors disabled:opacity-50 ${tone}`}
+    >
+      {busy ? <Loader2 size={15} className="animate-spin" /> : icon}
+      <span className="hidden sm:inline">{label}</span>
+    </button>
+  );
 }
 
 export default function MailView({ target }: { target?: MailMessageSummary }) {
@@ -519,24 +555,26 @@ export default function MailView({ target }: { target?: MailMessageSummary }) {
 
         {selected && (
           <div className="mx-auto w-full max-w-3xl p-4 md:p-8">
-            <div className="mb-4 flex items-center gap-2">
+            {/* The message toolbar. Delete lives here today; Move to Junk,
+                Summarize and Reply will slot in beside it. Back sits at the far
+                left below `md`, where the list is hidden behind the message and
+                there is nowhere else to return from. */}
+            <div className="mb-4 flex items-center gap-1 border-b border-neutral-200 pb-3 dark:border-neutral-700">
               <div className="md:hidden">
-                <Button onClick={() => { setSelected(null); setDetail(null); }}>
-                  <span className="flex items-center gap-1.5"><ArrowLeft size={15} /> {t("common.back")}</span>
-                </Button>
+                <ToolbarButton
+                  icon={<ArrowLeft size={15} />}
+                  label={t("common.back")}
+                  onClick={() => { setSelected(null); setDetail(null); }}
+                />
               </div>
-              <button
+              <ToolbarButton
+                icon={<Trash2 size={15} />}
+                label={t("mail.delete")}
                 onClick={() => void remove(selected)}
                 disabled={deleting !== null}
-                title={t("mail.delete")}
-                aria-label={t("mail.delete")}
-                className="ml-auto flex items-center gap-1.5 rounded-lg border border-neutral-200 px-2.5 py-1.5 text-sm text-neutral-500 hover:border-red-300 hover:bg-red-50 hover:text-red-600 disabled:opacity-50 dark:border-neutral-600 dark:hover:border-red-800 dark:hover:bg-red-950/40"
-              >
-                {deleting === selected.uid
-                  ? <Loader2 size={15} className="animate-spin" />
-                  : <Trash2 size={15} />}
-                <span className="hidden sm:inline">{t("mail.delete")}</span>
-              </button>
+                busy={deleting === selected.uid}
+                danger
+              />
             </div>
 
             {deleteError && (
