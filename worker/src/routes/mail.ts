@@ -39,15 +39,16 @@ import { ImapError, runImapOp } from "../imap";
  *     iCloud's IMAP endpoint on its own port. Without that check this is an
  *     SSRF tool with a socket API, which is strictly worse than one with
  *     `fetch`: it can reach non-HTTP services on any port.
- *   - **Reads are read-only at the protocol level; writes are two named ops.**
+ *   - **Reads are read-only at the protocol level; writes are a small named set.**
  *     Read ops open mailboxes with EXAMINE and fetch with BODY.PEEK, so the
- *     server refuses any mutation on those paths regardless of this code. Two
- *     write ops exist, added deliberately for the reader UI: `mark_seen`
- *     (`UID STORE \Seen`) and `delete` (`UID MOVE` to Trash, or an expunge from
- *     Trash). Each issues exactly one constrained mutation and takes no arbitrary
- *     flag or command from the caller. There is still no send path, and the
- *     assistant builds none of these ops. Adding a third write is a deliberate
- *     change, not an extension.
+ *     server refuses any mutation on those paths regardless of this code. The
+ *     write ops, added deliberately for the reader UI, are `mark_seen`
+ *     (`UID STORE \Seen`), `delete` (`UID MOVE` to Trash, or an expunge from
+ *     Trash) and `move` (`UID MOVE` to a named folder — Move to Junk today).
+ *     Each issues exactly one constrained mutation and takes no arbitrary flag or
+ *     command from the caller. There is still no send path, and the assistant
+ *     builds none of these ops. Adding another write is a deliberate change, not
+ *     an extension.
  *   - **It is rate-limited per user** (`MAIL_LIMIT`), keyed by user id rather
  *     than IP because identity exists here. One op is one TLS handshake and one
  *     round-trip to Apple; the budget is set well above reading a mailbox and

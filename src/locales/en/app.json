@@ -573,6 +573,7 @@
     "attachmentsHint": "Downloading an attachment doesn't mark the message as read.",
     "download": "Download",
     "delete": "Delete",
+    "junk": "Move to Junk",
     "deleteConfirm": "Move this message to Trash? You can recover it from your Trash folder.",
     "deleteConfirmPermanent": "Delete this message permanently? It's already in Trash, so this can't be undone.",
     "attachmentTooLarge": "Too large to download here — open it in Mail or on iCloud.com.",

@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, Download, Inbox, Loader2, Paperclip, RefreshCw, Trash2 } from "lucide-react";
+import { ArrowLeft, Ban, Download, Inbox, Loader2, Paperclip, RefreshCw, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { MAIL_MAX_ATTACHMENT_BYTES } from "@secondbrain/shared";
 import { getMailSettings, saveMailSettings, type MailFolder } from "../lib/settings";
 import {
   DEFAULT_MAILBOX, deleteMessage, getMessage, listFolders, loadHeaders, mailboxStatus, markSeen,
-  peekMessage, resolveTrashMailbox, saveAttachment, searchMail,
+  moveToJunk, peekMessage, resolveJunkMailbox, resolveTrashMailbox, saveAttachment, searchMail,
   type MailAddress, type MailAttachment, type MailboxStatus, type MailMessageDetail,
   type MailMessageSummary,
 } from "../lib/mail";
@@ -124,10 +124,11 @@ export default function MailView({ target }: { target?: MailMessageSummary }) {
    *  spend a rate-limit budget by double-clicking. */
   const [downloading, setDownloading] = useState("");
   const [downloadError, setDownloadError] = useState("");
-  /** The uid being deleted, or null — one at a time, and it gates the button so
-   *  a double-click can't fire two moves at the same message. */
-  const [deleting, setDeleting] = useState<number | null>(null);
-  const [deleteError, setDeleteError] = useState("");
+  /** The toolbar action in flight, or null — one at a time across every action,
+   *  so a double-click (or clicking Delete then Junk) can't fire two moves at
+   *  the same message. Carries the uid so the spinner lands on the right button. */
+  const [busy, setBusy] = useState<{ uid: number; action: "delete" | "junk" } | null>(null);
+  const [actionError, setActionError] = useState("");
 
   // The typed query only becomes the searched one after it settles.
   useEffect(() => {
@@ -363,7 +364,7 @@ export default function MailView({ target }: { target?: MailMessageSummary }) {
     setSelected(summary);
     setDetailError("");
     setDownloadError("");
-    setDeleteError("");
+    setActionError("");
     markRead(summary);
     // Asked synchronously, because `getMessage` is async even on a hit: showing
     // a loading state and replacing it in the next tick is a flicker on every
@@ -383,31 +384,58 @@ export default function MailView({ target }: { target?: MailMessageSummary }) {
     }
   }
 
+  /** Drop a message from the list snapshot after it has moved out of the
+   *  mailbox (deleted or filed). Keeps `messages`/`uids`/`total` in step so
+   *  paging stays correct, and closes the now-empty message pane. */
+  function removeFromList(summary: MailMessageSummary) {
+    setMessages((current) => current.filter((m) => !(m.uid === summary.uid && m.mailbox === summary.mailbox)));
+    setUids((current) => current.filter((u) => u !== summary.uid));
+    setTotal((current) => Math.max(0, current - 1));
+    setSelected(null);
+    setDetail(null);
+  }
+
   /**
    * Delete the open message — moved to Trash, reversible.
    *
    * Confirmed first (`window.confirm` works in this WKWebView; `window.prompt`
-   * does not — see CLAUDE.md), then removed from the list snapshot and its uid
-   * dropped so paging stays in step. The confirm wording is stronger when the
-   * message is already in Trash, where the delete op expunges it for good.
+   * does not — see CLAUDE.md), then removed from the list snapshot. The confirm
+   * wording is stronger when the message is already in Trash, where the delete
+   * op expunges it for good.
    */
   async function remove(summary: MailMessageSummary) {
-    if (deleting !== null) return;
+    if (busy) return;
     const inTrash = summary.mailbox === resolveTrashMailbox(account!);
     if (!window.confirm(t(inTrash ? "mail.deleteConfirmPermanent" : "mail.deleteConfirm"))) return;
-    setDeleting(summary.uid);
-    setDeleteError("");
+    setBusy({ uid: summary.uid, action: "delete" });
+    setActionError("");
     try {
       await deleteMessage(account!, summary.uid, summary.mailbox);
-      setMessages((current) => current.filter((m) => !(m.uid === summary.uid && m.mailbox === summary.mailbox)));
-      setUids((current) => current.filter((u) => u !== summary.uid));
-      setTotal((current) => Math.max(0, current - 1));
-      setSelected(null);
-      setDetail(null);
+      removeFromList(summary);
     } catch (e) {
-      setDeleteError(e instanceof Error ? e.message : String(e));
+      setActionError(e instanceof Error ? e.message : String(e));
     } finally {
-      setDeleting(null);
+      setBusy(null);
+    }
+  }
+
+  /**
+   * Move the open message to Junk.
+   *
+   * No confirmation, unlike delete: it is reversible (the message is in the Junk
+   * folder, not gone) and low-stakes, which is how Apple Mail treats it too.
+   */
+  async function moveJunk(summary: MailMessageSummary) {
+    if (busy) return;
+    setBusy({ uid: summary.uid, action: "junk" });
+    setActionError("");
+    try {
+      await moveToJunk(account!, summary.uid, summary.mailbox);
+      removeFromList(summary);
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
     }
   }
 
@@ -555,8 +583,8 @@ export default function MailView({ target }: { target?: MailMessageSummary }) {
 
         {selected && (
           <div className="mx-auto w-full max-w-3xl p-4 md:p-8">
-            {/* The message toolbar. Delete lives here today; Move to Junk,
-                Summarize and Reply will slot in beside it. Back sits at the far
+            {/* The message toolbar. Delete and Move to Junk live here today;
+                Summarize and Reply will slot in beside them. Back sits at the far
                 left below `md`, where the list is hidden behind the message and
                 there is nowhere else to return from. */}
             <div className="mb-4 flex items-center gap-1 border-b border-neutral-200 pb-3 dark:border-neutral-700">
@@ -571,14 +599,25 @@ export default function MailView({ target }: { target?: MailMessageSummary }) {
                 icon={<Trash2 size={15} />}
                 label={t("mail.delete")}
                 onClick={() => void remove(selected)}
-                disabled={deleting !== null}
-                busy={deleting === selected.uid}
+                disabled={busy !== null}
+                busy={busy?.action === "delete" && busy.uid === selected.uid}
                 danger
               />
+              {/* Hidden when the message is already in Junk — moving it there
+                  again is a no-op the server would reject. */}
+              {selected.mailbox !== resolveJunkMailbox(account) && (
+                <ToolbarButton
+                  icon={<Ban size={15} />}
+                  label={t("mail.junk")}
+                  onClick={() => void moveJunk(selected)}
+                  disabled={busy !== null}
+                  busy={busy?.action === "junk" && busy.uid === selected.uid}
+                />
+              )}
             </div>
 
-            {deleteError && (
-              <p className="mb-4 rounded-lg bg-red-50 p-3 text-sm leading-relaxed text-red-600 dark:bg-red-950/40">{deleteError}</p>
+            {actionError && (
+              <p className="mb-4 rounded-lg bg-red-50 p-3 text-sm leading-relaxed text-red-600 dark:bg-red-950/40">{actionError}</p>
             )}
 
             <h1 className="mb-2 text-xl font-bold leading-snug">{selected.subject}</h1>

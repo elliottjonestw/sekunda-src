@@ -27,16 +27,17 @@ export { ImapError };
  * for the two write ops below, SELECT, UID STORE, UID MOVE and UID EXPUNGE — and
  * LOGOUT.
  *
- * **Reads use EXAMINE, never SELECT; writes are two named ops and nothing else.**
- * Every READ op (`search`, `fetch`, `headers`, `part`, `status`) opens its
- * mailbox with EXAMINE and fetches with BODY.PEEK, so the server itself refuses
- * anything that would change the mailbox — a bug on a read path still cannot
- * mark, move or expunge a message. Two WRITE ops exist, added deliberately for
- * the reader UI: `mark_seen` (SELECT + `UID STORE … FLAGS (\Seen)`) and `delete`
- * (SELECT + `UID MOVE` to Trash, or an expunge when already in Trash). Each
- * issues exactly one constrained mutation; neither takes an arbitrary flag or
- * command from the caller. The AI tool layer builds none of these, so the
- * assistant remains read-only regardless of what this client can do.
+ * **Reads use EXAMINE, never SELECT; writes are a small named set.** Every READ
+ * op (`search`, `fetch`, `headers`, `part`, `status`) opens its mailbox with
+ * EXAMINE and fetches with BODY.PEEK, so the server itself refuses anything that
+ * would change the mailbox — a bug on a read path still cannot mark, move or
+ * expunge a message. The WRITE ops, added deliberately for the reader UI, are
+ * `mark_seen` (SELECT + `UID STORE … FLAGS (\Seen)`), `delete` (SELECT + `UID
+ * MOVE` to Trash, or an expunge when already in Trash) and `move` (SELECT + `UID
+ * MOVE` to a named folder — Move to Junk today). Each issues exactly one
+ * constrained mutation; none takes an arbitrary flag or command from the caller.
+ * The AI tool layer builds none of these, so the assistant remains read-only
+ * regardless of what this client can do.
  *
  * The protocol details that bite, all handled below:
  *   - **Literals.** Any response line may end with `{n}` meaning "n raw bytes
@@ -414,6 +415,14 @@ async function runOp(conn: ImapConnection, op: MailOp): Promise<MailOpResult> {
       await conn.command([`UID MOVE ${op.uid} `, astring(op.trash)]);
     }
     return { op: "delete", uidvalidity: selected.uidvalidity };
+  }
+
+  if (op.op === "move") {
+    // The generic file-away: move to a named folder, no expunge branch. `dest`
+    // is a mailbox name the client resolved; it is quoted exactly like `mailbox`.
+    const selected = parseExamine(await conn.command(["SELECT ", astring(op.mailbox)]));
+    await conn.command([`UID MOVE ${op.uid} `, astring(op.dest)]);
+    return { op: "move", uidvalidity: selected.uidvalidity };
   }
 
   // Read-only. The server enforces it from here on — see the header note.

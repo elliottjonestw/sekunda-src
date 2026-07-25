@@ -19,12 +19,13 @@
 //!     it, any script that reaches the IPC bridge gets a general-purpose TCP
 //!     client running outside the webview's origin rules — the same reason
 //!     `capabilities/default.json` carries no blanket http scope.
-//!   * **Reads are read-only; writes are two named ops.** Every READ op opens
-//!     the mailbox with EXAMINE and fetches with BODY.PEEK, so the server itself
-//!     refuses any change a read path could ask for. Two WRITE ops exist,
-//!     deliberately, for the reader UI: `mark_seen` (SELECT + `UID STORE …
-//!     FLAGS (\Seen)`) and `delete` (SELECT + `UID MOVE` to Trash, or an expunge
-//!     when already in Trash). Each issues one constrained mutation and takes no
+//!   * **Reads are read-only; writes are a small named set.** Every READ op
+//!     opens the mailbox with EXAMINE and fetches with BODY.PEEK, so the server
+//!     itself refuses any change a read path could ask for. The WRITE ops, added
+//!     deliberately for the reader UI, are `mark_seen` (SELECT + `UID STORE …
+//!     FLAGS (\Seen)`), `delete` (SELECT + `UID MOVE` to Trash, or an expunge
+//!     when already in Trash) and `move` (SELECT + `UID MOVE` to a named folder
+//!     — Move to Junk today). Each issues one constrained mutation and takes no
 //!     arbitrary flag or command from the caller. The AI tool layer builds none
 //!     of these, so the assistant is read-only regardless of this command.
 //!   * **No logging, ever.** This function holds the user's app-specific
@@ -155,6 +156,16 @@ pub enum MailOp {
         uid: u32,
         trash: String,
     },
+    /// Move one message to a named folder — the reader's file-away. `UID MOVE`
+    /// to `dest`; the generic form of `delete`'s move, no expunge branch. Move
+    /// to Junk is its first caller.
+    Move {
+        #[serde(flatten)]
+        creds: Credentials,
+        mailbox: String,
+        uid: u32,
+        dest: String,
+    },
 }
 
 impl MailOp {
@@ -168,6 +179,7 @@ impl MailOp {
             MailOp::Part { creds, .. } => creds,
             MailOp::MarkSeen { creds, .. } => creds,
             MailOp::Delete { creds, .. } => creds,
+            MailOp::Move { creds, .. } => creds,
         }
     }
 }
@@ -272,6 +284,9 @@ pub enum OpResult {
         flags: Vec<String>,
     },
     Delete {
+        uidvalidity: u32,
+    },
+    Move {
         uidvalidity: u32,
     },
     Part {
@@ -1240,6 +1255,17 @@ async fn run_op(conn: &mut Conn, op: &MailOp) -> Result<OpResult, String> {
             Ok(OpResult::Delete { uidvalidity })
         }
 
+        MailOp::Move { mailbox, uid, dest, .. } => {
+            reject_control(mailbox, "Mailbox names")?;
+            reject_control(dest, "Mailbox names")?;
+            let (.., uidvalidity) =
+                parse_examine(&conn.command(&[Arg::Text("SELECT ".into()), astring(mailbox)]).await?);
+            // The generic file-away: move to a named folder, no expunge branch.
+            // `dest` is quoted exactly like `mailbox`.
+            conn.command(&[Arg::Text(format!("UID MOVE {} ", uid)), astring(dest)]).await?;
+            Ok(OpResult::Move { uidvalidity })
+        }
+
         MailOp::Search {
             mailbox,
             criteria,
@@ -1738,6 +1764,7 @@ mod tests {
         assert_eq!(format!("UID STORE {} {}FLAGS (\\Seen)", 991, "-"), "UID STORE 991 -FLAGS (\\Seen)");
         assert_eq!(format!("UID STORE {} +FLAGS (\\Deleted)", 991), "UID STORE 991 +FLAGS (\\Deleted)");
         assert_eq!(format!("UID EXPUNGE {}", 991), "UID EXPUNGE 991");
+        assert_eq!(format!("UID MOVE {} ", 991), "UID MOVE 991 ");
         // A Trash mailbox name is a quoted astring; anything trying to break out
         // is escaped inside the quotes rather than run as syntax.
         match astring("Deleted Messages") {

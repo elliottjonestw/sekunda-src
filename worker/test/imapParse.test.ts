@@ -193,6 +193,7 @@ test("every op the client can build is one the Worker will accept", () => {
     // The two write ops — the reader's mark-as-read and delete.
     { ...creds, op: "mark_seen", mailbox: "INBOX", uid: 991, seen: true },
     { ...creds, op: "delete", mailbox: "INBOX", uid: 991, trash: "Deleted Messages" },
+    { ...creds, op: "move", mailbox: "INBOX", uid: 991, dest: "Junk" },
   ]) {
     const parsed = mailOpSchema.safeParse(op);
     assert.ok(parsed.success, `${op.op} rejected: ${parsed.error?.message}`);
@@ -225,6 +226,9 @@ test("the envelope still refuses what it exists to refuse", () => {
     // there too — it is interpolated into a `UID MOVE … <trash>` command.
     { ...creds, op: "delete", mailbox: "INBOX", uid: 1, trash: "Trash\r\na1 LOGOUT" },
     { ...creds, op: "mark_seen", mailbox: "INBOX", uid: 1, seen: "yes" },
+    // The move op's destination is a mailbox name too — interpolated into
+    // `UID MOVE … <dest>`, so CR/LF is refused at the schema.
+    { ...creds, op: "move", mailbox: "INBOX", uid: 1, dest: "Junk\r\na1 LOGOUT" },
   ];
   for (const op of bad) assert.equal(mailOpSchema.safeParse(op).success, false, JSON.stringify(op.criteria ?? op));
 });

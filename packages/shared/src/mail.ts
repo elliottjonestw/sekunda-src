@@ -33,11 +33,12 @@ import { z } from "zod";
  *
  * **Read-only is now SCOPED, not absolute.** For most of this feature's life
  * every op opened its mailbox with EXAMINE and fetched with BODY.PEEK, so the
- * *server itself* refused any mutation regardless of our code. Two write ops
- * now exist — `mark_seen` and `delete` — added deliberately for the reader UI,
- * never for the assistant. The read ops are unchanged (still EXAMINE-only); the
- * two write ops are the exception, and each issues exactly ONE constrained
- * mutation (set/clear `\Seen`, or move-to-Trash / expunge-from-Trash). The
+ * *server itself* refused any mutation regardless of our code. A small, explicit
+ * set of write ops now exists — `mark_seen`, `delete` and `move` — added
+ * deliberately for the reader UI, never for the assistant. The read ops are
+ * unchanged (still EXAMINE-only); each write op is the exception, and each
+ * issues exactly ONE constrained mutation (set/clear `\Seen`; move-to-Trash or
+ * expunge-from-Trash; move to a named folder — Move to Junk today). The
  * executors take no arbitrary flag or command from the client, and the AI tool
  * layer builds none of these ops, so the assistant still cannot change a
  * mailbox. See the headers of `worker/src/imap.ts` and `src-tauri/src/mail.rs`.
@@ -283,6 +284,24 @@ export const mailOpSchema = z.discriminatedUnion("op", [
     uid: z.number().int().min(1),
     trash: mailboxName,
   }),
+  /**
+   * Move one message to a named folder — the reader's file-away.
+   *
+   * The generic form of the move `delete` already does to Trash: `UID MOVE` to
+   * `dest`, which the client resolved from its folder list. Move to Junk is its
+   * first caller; a Move to Archive, or move-to-any-folder, is the same op with
+   * a different `dest`. `dest` is a mailbox name (CR/LF-refused, quoted by the
+   * executor exactly like `mailbox`), and the executor only ever issues the one
+   * `UID MOVE`. Unlike `delete` there is no expunge branch — nothing here ever
+   * removes a message, it only relocates it.
+   */
+  z.object({
+    ...credentials,
+    op: z.literal("move"),
+    mailbox: mailboxName,
+    uid: z.number().int().min(1),
+    dest: mailboxName,
+  }),
 ]);
 
 export type MailOp = z.infer<typeof mailOpSchema>;
@@ -442,6 +461,7 @@ export type MailOpResult =
       flags: string[];
     }
   | { op: "delete"; uidvalidity: number }
+  | { op: "move"; uidvalidity: number }
   | {
       op: "part";
       uidvalidity: number;

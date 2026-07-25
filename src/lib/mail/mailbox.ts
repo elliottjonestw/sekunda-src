@@ -385,6 +385,21 @@ export function resolveTrashMailbox(account: MailAccount): string {
 }
 
 /**
+ * The account's Junk folder, where "Move to Junk" files a message.
+ *
+ * Same resolution shape as `resolveTrashMailbox`: the SPECIAL-USE `\Junk` flag
+ * if the server sends one, else a folder named like Junk/Spam/Bulk, else
+ * iCloud's own "Junk".
+ */
+export function resolveJunkMailbox(account: MailAccount): string {
+  const folders = account.folders ?? [];
+  const byFlag = folders.find((f) => f.flags.some((fl) => fl.toLowerCase() === "\\junk"));
+  if (byFlag) return byFlag.name;
+  const byName = folders.find((f) => /junk|spam|bulk/i.test(f.label ?? f.name));
+  return byName?.name ?? "Junk";
+}
+
+/**
  * Delete one message — moved to Trash, reversible.
  *
  * Also a WRITE. `UID MOVE` to the account's Trash folder (an expunge when the
@@ -402,6 +417,31 @@ export async function deleteMessage(
   if (result.op !== "delete") throw new MailError("The mail server answered the wrong question.");
   noteUidValidity(account.username, mailbox, result.uidvalidity);
   forgetMessage(account.username, mailbox, uid);
+}
+
+/**
+ * Move one message to a named folder — the reader's file-away.
+ *
+ * The generic write that `deleteMessage` is a special case of: `UID MOVE` to
+ * `dest`, with the same cache treatment (the message leaves this mailbox, so it
+ * and the mailbox's search pages are forgotten). Move to Junk is the first
+ * caller; a future Move to Archive is this same call with a different folder.
+ */
+export async function moveMessage(
+  account: MailAccount,
+  uid: number,
+  mailbox: string,
+  dest: string,
+): Promise<void> {
+  const result = await imapCall(account, { op: "move", mailbox, uid, dest });
+  if (result.op !== "move") throw new MailError("The mail server answered the wrong question.");
+  noteUidValidity(account.username, mailbox, result.uidvalidity);
+  forgetMessage(account.username, mailbox, uid);
+}
+
+/** Move one message to the account's Junk folder. */
+export function moveToJunk(account: MailAccount, uid: number, mailbox = DEFAULT_MAILBOX): Promise<void> {
+  return moveMessage(account, uid, mailbox, resolveJunkMailbox(account));
 }
 
 /** A connectable account for the one provider this supports. The host and port
