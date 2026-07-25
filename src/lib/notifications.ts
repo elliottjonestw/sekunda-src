@@ -32,6 +32,12 @@ export function resetNotificationState(): void {
 }
 
 export async function ensureNotificationPermission(): Promise<boolean> {
+  // Native notifications are a Tauri plugin whose IPC command doesn't exist on
+  // the web build, so `isPermissionGranted()` throws ("Cannot read properties
+  // of undefined (reading 'invoke')") there. Browsers can't offer this anyway;
+  // report "granted" so the reminders view doesn't show a permission banner for
+  // a feature that isn't applicable. Same guard `startReminderPoller` uses.
+  if (!isTauri()) return true;
   let granted = await isPermissionGranted();
   if (!granted) {
     const perm = await requestPermission();
