@@ -11,16 +11,14 @@ import { v4 as uuid } from "uuid";
 import type {
   EventRow,
   ReminderRow,
-  TodoRow,
   NoteRow,
-  ListRow,
   TagRow,
   LinkRow,
   PersonRow,
   ItemType,
 } from "./types";
 import { DATA_TABLES } from "@secondbrain/shared";
-import type { TodoCreate, TodoUpdate, ReminderCreate, CustomFieldDef, DataTable } from "@secondbrain/shared";
+import type { ReminderCreate, CustomFieldDef, DataTable } from "@secondbrain/shared";
 import { apiRequest, apiGetBinary, ApiError, OfflineError } from "./lib/api";
 import { getCurrentSpaceId } from "./lib/authStore";
 import { networkFirst } from "./lib/cache";
@@ -154,7 +152,7 @@ export async function deleteEvent(id: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Reminders — served by the Worker (M3). Same remote pattern as todos/lists.
+// Reminders — served by the Worker (M3).
 // ---------------------------------------------------------------------------
 export async function listReminders(): Promise<ReminderRow[]> {
   return networkFirst(`reminders:${getCurrentSpaceId()}`, () =>
@@ -188,7 +186,6 @@ export async function upsertReminder(input: ReminderInput): Promise<string> {
     priority: input.priority,
     completed: input.completed as 0 | 1,
     completed_at: input.completed_at,
-    linked_todo_id: input.linked_todo_id,
   };
   if (input.id) {
     await apiRequest<ReminderRow>(spacePath(`/reminders/${input.id}`), { method: "PATCH", body: fields });
@@ -212,137 +209,6 @@ export async function toggleReminder(id: string, completed: boolean): Promise<vo
 export async function deleteReminder(id: string): Promise<void> {
   await apiRequest<void>(spacePath(`/reminders/${id}`), { method: "DELETE" });
   await removeItemRelations("reminder", id); // links/tags still local until M3d
-}
-
-// ---------------------------------------------------------------------------
-// Lists + Todos — served by the Cloudflare Worker (M2). Signatures unchanged.
-//
-// Reads go through networkFirst: fresh from the server when online, the last
-// snapshot when offline. Writes have no offline fallback by design — they throw
-// OfflineError, which the UI surfaces as "can't save, you're offline". Client-
-// generated ids (newId) make every create idempotent on retry.
-// ---------------------------------------------------------------------------
-
-export async function listLists(): Promise<ListRow[]> {
-  const rows = await networkFirst(`lists:${getCurrentSpaceId()}`, () =>
-    apiRequest<ListRow[]>(spacePath("/lists")),
-  );
-  // Sort client-side with Intl.Collator: D1 has no ICU, so the server's
-  // ORDER BY name is only a stable default, not locale-correct.
-  return byName(rows, (l) => l.name);
-}
-
-export async function upsertList(input: Partial<ListRow> & { name: string }): Promise<string> {
-  const name = normalizeKey(input.name);
-  if (input.id) {
-    await apiRequest<ListRow>(spacePath(`/lists/${input.id}`), {
-      method: "PATCH",
-      body: { name, color: input.color ?? null },
-    });
-    return input.id;
-  }
-  const id = newId();
-  await apiRequest<ListRow>(spacePath("/lists"), {
-    method: "POST",
-    body: { id, name, color: input.color ?? null },
-  });
-  return id;
-}
-
-export async function deleteList(id: string): Promise<void> {
-  // The server rehomes this list's todos onto a survivor and refuses to delete
-  // the last one (409). The old local guard "silently do nothing if it's the
-  // last list" is gone on purpose — a refusal the UI can report beats a delete
-  // that looks like it worked and didn't.
-  await apiRequest<void>(spacePath(`/lists/${id}`), { method: "DELETE" });
-}
-
-/**
- * Formerly seeded Personal/Work into local SQLite. The Worker now creates both
- * (with per-space UUID ids) when an account registers, so this is a no-op kept
- * only so existing callers — the demo seeder — still compile. The "always at
- * least one list" invariant now lives in registration and the server's
- * last-list delete refusal.
- */
-export async function ensureDefaultLists(): Promise<void> {
-  /* no-op: lists are provisioned server-side at registration */
-}
-
-export async function listTodos(): Promise<TodoRow[]> {
-  return networkFirst(`todos:${getCurrentSpaceId()}`, () =>
-    apiRequest<TodoRow[]>(spacePath("/todos")),
-  );
-}
-
-export async function getTodo(id: string): Promise<TodoRow | undefined> {
-  try {
-    return await apiRequest<TodoRow>(spacePath(`/todos/${id}`));
-  } catch (e) {
-    // A missing todo is `undefined` here, matching the old SELECT-returns-empty
-    // contract; anything else (offline, auth) still throws.
-    if (e instanceof ApiError && e.status === 404) return undefined;
-    throw e;
-  }
-}
-
-export type TodoInput = Omit<
-  TodoRow,
-  "id" | "sequence" | "created_at" | "updated_at"
-> & { id?: string };
-
-export async function upsertTodo(input: TodoInput): Promise<string> {
-  if (input.id) {
-    // A full-field PATCH: the caller (TodosView, ai.ts) has already merged, so
-    // every field is present and this replaces them. The partial-merge
-    // machinery still applies — absent keys would be left alone — it just
-    // happens that none are absent here.
-    const patch: TodoUpdate = {
-      title: input.title,
-      notes: input.notes,
-      list_id: input.list_id,
-      due_at: input.due_at,
-      priority: input.priority,
-      completed: input.completed as 0 | 1,
-      completed_at: input.completed_at,
-      parent_todo_id: input.parent_todo_id,
-      position: input.position,
-    };
-    await apiRequest<TodoRow>(spacePath(`/todos/${input.id}`), { method: "PATCH", body: patch });
-    return input.id;
-  }
-  const id = newId();
-  const body: TodoCreate = {
-    id,
-    title: input.title,
-    notes: input.notes,
-    list_id: input.list_id,
-    due_at: input.due_at,
-    priority: input.priority,
-    completed: input.completed as 0 | 1,
-    completed_at: input.completed_at,
-    parent_todo_id: input.parent_todo_id,
-    position: input.position,
-  };
-  await apiRequest<TodoRow>(spacePath("/todos"), { method: "POST", body });
-  return id;
-}
-
-export async function toggleTodo(id: string, completed: boolean): Promise<void> {
-  await apiRequest<TodoRow>(spacePath(`/todos/${id}`), {
-    method: "PATCH",
-    body: { completed: completed ? 1 : 0, completed_at: completed ? nowIso() : null },
-  });
-}
-
-export async function reorderTodos(ids: string[]): Promise<void> {
-  await apiRequest<void>(spacePath("/todos/reorder"), { method: "POST", body: { ids } });
-}
-
-export async function deleteTodo(id: string): Promise<void> {
-  await apiRequest<void>(spacePath(`/todos/${id}`), { method: "DELETE" });
-  // Links and tags for this todo still live in local SQLite until M3, so they
-  // are cleaned up here; the server already removed the todo and its subtasks.
-  await removeItemRelations("todo", id);
 }
 
 // ---------------------------------------------------------------------------
@@ -462,9 +328,9 @@ export async function getNoteImage(
   }
 }
 
-// searchRows (the local term-search-over-a-table helper) is gone: todos,
-// reminders and events all search server-side now, each ranking with the same
-// shared matchQuery. Notes keep their own FTS path (still local until M4).
+// searchRows (the local term-search-over-a-table helper) is gone: reminders
+// and events all search server-side now, each ranking with the same shared
+// matchQuery. Notes keep their own FTS path (still local until M4).
 
 /** Global-search helpers: one row per match, ranked, no filters. */
 export async function searchReminders(query: string): Promise<ReminderRow[]> {
@@ -472,21 +338,6 @@ export async function searchReminders(query: string): Promise<ReminderRow[]> {
   if (!q) return [];
   try {
     return await apiRequest<ReminderRow[]>(spacePath(`/reminders?q=${encodeURIComponent(q)}`));
-  } catch (e) {
-    if (e instanceof OfflineError) return [];
-    throw e;
-  }
-}
-
-/** Remote search (M2). The server ranks with the same shared helpers, so the
- *  result order matches the other search paths. Offline it degrades to empty
- *  rather than throwing — the global search bar just omits todos until the
- *  network returns, which reads better than a whole-search error. */
-export async function searchTodos(query: string): Promise<TodoRow[]> {
-  const q = query.trim();
-  if (!q) return [];
-  try {
-    return await apiRequest<TodoRow[]>(spacePath(`/todos?q=${encodeURIComponent(q)}`));
   } catch (e) {
     if (e instanceof OfflineError) return [];
     throw e;
@@ -756,13 +607,12 @@ export async function linksForItem(type: ItemType, id: string): Promise<LinkRow[
 export async function allLinkTargets(): Promise<
   { type: ItemType; id: string; label: string }[]
 > {
-  const [events, reminders, todos, notes, people] = await Promise.all([
-    listEvents(), listReminders(), listTodos(), listNotes(), listPeople(),
+  const [events, reminders, notes, people] = await Promise.all([
+    listEvents(), listReminders(), listNotes(), listPeople(),
   ]);
   return [
     ...events.map((e) => ({ type: "event" as ItemType, id: e.id, label: e.summary })),
     ...reminders.map((r) => ({ type: "reminder" as ItemType, id: r.id, label: r.title })),
-    ...todos.map((t) => ({ type: "todo" as ItemType, id: t.id, label: t.title })),
     ...notes.map((n) => ({ type: "note" as ItemType, id: n.id, label: n.title || "(untitled)" })),
     ...people.map((p) => ({ type: "person" as ItemType, id: p.id, label: p.full_name })),
   ];
@@ -779,7 +629,6 @@ export async function getItemLabel(type: ItemType, id: string): Promise<string> 
   switch (type) {
     case "event": return (await getEvent(id))?.summary || "(untitled)";
     case "reminder": return (await getReminder(id))?.title || "(untitled)";
-    case "todo": return (await getTodo(id))?.title || "(untitled)";
     case "person": return (await getPerson(id))?.full_name || "(untitled)";
     case "note": return (await getNote(id))?.title || "(untitled)";
   }

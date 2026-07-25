@@ -687,7 +687,7 @@ function AddressRows({ rows, onChange }: { rows: PersonAddress[]; onChange: (row
  * `person_custom_fields` registry and every person shows the same rows; only the
  * VALUE is per-person (stored in this person's custom_fields, keyed by label).
  * Adding/removing/reordering a field affects all people; editing a value does
- * not. Drag-to-reorder uses HTML5 DnD like the Todos list.
+ * not.
  */
 function CustomFields({ values, onChange }: { values: PersonCustomField[]; onChange: (rows: PersonCustomField[]) => void }) {
   const { t } = useTranslation();

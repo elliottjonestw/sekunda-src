@@ -1,12 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  ChevronLeft, ChevronRight, Plus, Repeat, Square, Upload, Download,
+  ChevronLeft, ChevronRight, Plus, Repeat, Upload, Download,
   Layers, Loader2, CloudOff,
 } from "lucide-react";
 import { addDays, addMonths, addWeeks } from "date-fns";
 import { useTranslation } from "react-i18next";
-import type { TodoRow, EventOccurrence, UnifiedEvent } from "../types";
-import { listTodos } from "../db";
+import type { EventOccurrence, UnifiedEvent } from "../types";
 import {
   getOccurrences, listCalendars, setCalendarVisible, invalidateCache,
   defaultCalendarId, type CalendarInfo,
@@ -38,7 +37,6 @@ export default function CalendarView(
     return at && !isNaN(at.getTime()) ? at : new Date();
   });
   const [occurrences, setOccurrences] = useState<EventOccurrence[]>([]);
-  const [todos, setTodos] = useState<TodoRow[]>([]);
   const [editing, setEditing] = useState<{ event: UnifiedEvent | null; calendarId?: string; start?: Date; occ?: Date } | null>(null);
   const [msg, setMsg] = useState("");
   const [loading, setLoading] = useState(false);
@@ -62,14 +60,10 @@ export default function CalendarView(
   const load = async () => {
     const mine = ++seq.current;
     setLoading(true);
-    const [{ occurrences: occs, errors: errs }, allTodos] = await Promise.all([
-      getOccurrences(winStart, winEnd),
-      listTodos(),
-    ]);
+    const { occurrences: occs, errors: errs } = await getOccurrences(winStart, winEnd);
     if (seq.current !== mine) return; // a newer window won
     setOccurrences(occs);
     setErrors(errs);
-    setTodos(allTodos.filter((t) => t.due_at && !t.completed));
     setLoading(false);
   };
   // The first fetch blocks the grid — a month drawn empty and then filled in is
@@ -188,7 +182,6 @@ export default function CalendarView(
             winStart={winStart}
             cursor={cursor}
             occurrences={occurrences}
-            todos={todos}
             onNewEvent={(d) => setEditing({ event: null, calendarId: defaultCalendarId(), start: d })}
             onOpen={(occ) => setEditing({ event: occ.event, occ: occ.start })}
           />
@@ -196,7 +189,6 @@ export default function CalendarView(
           <TimeGrid
             days={eachDay(winStart, winEnd)}
             occurrences={occurrences}
-            todos={todos}
             onNewEvent={(d) => setEditing({ event: null, calendarId: defaultCalendarId(), start: d })}
             onOpen={(occ) => setEditing({ event: occ.event, occ: occ.start })}
           />
@@ -249,16 +241,14 @@ function eachDay(start: Date, end: Date): Date[] {
 // Month grid
 // ---------------------------------------------------------------------------
 function MonthGrid({
-  winStart, cursor, occurrences, todos, onNewEvent, onOpen,
+  winStart, cursor, occurrences, onNewEvent, onOpen,
 }: {
   winStart: Date;
   cursor: Date;
   occurrences: EventOccurrence[];
-  todos: TodoRow[];
   onNewEvent: (d: Date) => void;
   onOpen: (occ: EventOccurrence) => void;
 }) {
-  const { t: tr } = useTranslation();
   const days = eachDay(winStart, addDays(winStart, 41)); // 6 weeks
 
   return (
@@ -268,7 +258,6 @@ function MonthGrid({
       ))}
       {days.map((day) => {
         const dayOccs = occurrences.filter((o) => isSameDay(o.start, day));
-        const dayTodos = todos.filter((t) => t.due_at && isSameDay(new Date(t.due_at), day));
         const inMonth = day.getMonth() === cursor.getMonth();
         return (
           <div
@@ -292,15 +281,6 @@ function MonthGrid({
                   {o.isRecurringInstance && <Repeat size={10} className="shrink-0 opacity-90" />}
                 </button>
               ))}
-              {dayTodos.map((t) => (
-                <div
-                  key={t.id}
-                  className="flex items-center gap-1 truncate rounded border border-dashed border-neutral-400 px-1 py-0.5 text-[10px] text-neutral-500 md:text-xs"
-                  title={`${tr("itemType.todo")}: ${t.title}`}
-                >
-                  <Square size={10} className="shrink-0" /> <span className="truncate">{t.title}</span>
-                </div>
-              ))}
             </div>
           </div>
         );
@@ -313,11 +293,10 @@ function MonthGrid({
 // Week / Day time grid
 // ---------------------------------------------------------------------------
 function TimeGrid({
-  days, occurrences, todos, onNewEvent, onOpen,
+  days, occurrences, onNewEvent, onOpen,
 }: {
   days: Date[];
   occurrences: EventOccurrence[];
-  todos: TodoRow[];
   onNewEvent: (d: Date) => void;
   onOpen: (occ: EventOccurrence) => void;
 }) {
@@ -341,7 +320,7 @@ function TimeGrid({
     // day's hour grid then share one vertical origin (the top of the body row),
     // so an event's `top` lines up with its hour label. The header must not live
     // inside the day column above the grid: its height is variable (weekday +
-    // date, plus any all-day events/todos), and a fixed spacer over the gutter
+    // date, plus any all-day events), and a fixed spacer over the gutter
     // could never match it — which slid every timed event down by that mismatch.
     <div className={scrolls ? "w-max md:w-full" : ""}>
       {/* header row — sticks to the top as the body scrolls under it. `flex`
@@ -354,18 +333,14 @@ function TimeGrid({
         <div className="flex flex-1">
           {days.map((day) => {
             const allDayOccs = occurrences.filter((o) => isSameDay(o.start, day) && o.event.all_day);
-            const dayTodos = todos.filter((t) => t.due_at && isSameDay(new Date(t.due_at), day));
             return (
               <div key={day.toISOString()} className={`${dayColClass} border-b bg-white py-1 text-center text-sm dark:bg-neutral-900 ${isToday(day) ? "text-blue-600" : ""}`}>
                 <div className="font-semibold">{fmtWeekdayShort(day)}</div>
                 <div className="text-lg">{day.getDate()}</div>
-                {(allDayOccs.length > 0 || dayTodos.length > 0) && (
+                {allDayOccs.length > 0 && (
                   <div className="space-y-0.5 px-1 pt-1">
                     {allDayOccs.map((o, i) => (
                       <button key={i} onClick={() => onOpen(o)} className="block w-full truncate rounded px-1 text-xs text-white" style={{ background: o.event.color ?? "#3b82f6" }}>{o.event.summary}</button>
-                    ))}
-                    {dayTodos.map((t) => (
-                      <div key={t.id} className="flex items-center gap-1 truncate rounded border border-dashed border-neutral-400 px-1 text-xs text-neutral-500"><Square size={10} className="shrink-0" /> <span className="truncate">{t.title}</span></div>
                     ))}
                   </div>
                 )}

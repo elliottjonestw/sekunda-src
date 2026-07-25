@@ -245,7 +245,7 @@ export async function logout(): Promise<void> {
   clearAuth();
   // The response cache persists in IndexedDB across the reload sign-out
   // triggers, so it must be wiped explicitly — otherwise one account's cached
-  // todos could render for the next person to sign in on this device.
+  // data could render for the next person to sign in on this device.
   await clearCache().catch(() => {});
 }
 

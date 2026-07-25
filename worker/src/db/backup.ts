@@ -47,7 +47,6 @@ async function columnsOf(db: D1Database, table: DataTable): Promise<Set<string>>
  */
 const IDENTITY_KEY_COLS: Partial<Record<DataTable, string>> = {
   tags: "name",
-  lists: "name",
   person_custom_fields: "label",
 };
 

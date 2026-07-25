@@ -2,7 +2,7 @@
 //
 // Each widget owns its loading, but several want the same rows: the schedule
 // and the summary both need the day's events, the due card and the summary both
-// need to-dos and reminders. Routing every read through one promise cache means
+// need events and reminders. Routing every read through one promise cache means
 // "widgets fetch independently" doesn't turn into "the page runs the same query
 // five times" — the second caller joins the first request rather than starting
 // another.
@@ -12,8 +12,8 @@
 // localStorage cache because forecasts are worth keeping between launches;
 // local SQLite rows are not.
 
-import type { EventOccurrence, TodoRow, ReminderRow, NoteRow, PersonRow } from "../../types";
-import { listTodos, listReminders, listNotes, listPeople } from "../../db";
+import type { EventOccurrence, ReminderRow, NoteRow, PersonRow } from "../../types";
+import { listReminders, listNotes, listPeople } from "../../db";
 import { getOccurrences } from "../../lib/calendars";
 import { startOfDay, endOfDay } from "../../lib/format";
 import { getDayWeather, type DayWeather } from "../../lib/weather";
@@ -82,10 +82,6 @@ export function loadEvents(day: Date, revision: number): Promise<EventOccurrence
 
 // These aren't day-scoped — the widgets filter them — so they key on revision
 // alone and are shared across every day the user steps to.
-export function loadTodos(revision: number): Promise<TodoRow[]> {
-  return cached(revision, "todos", listTodos);
-}
-
 export function loadReminders(revision: number): Promise<ReminderRow[]> {
   return cached(revision, "reminders", listReminders);
 }

@@ -12,10 +12,10 @@ import { Sparkles, RotateCw } from "lucide-react";
 import { CardShell } from "./CardShell";
 import { useAsync } from "./useAsync";
 import {
-  loadEvents, loadTodos, loadReminders, loadPeople, loadWeather,
+  loadEvents, loadReminders, loadPeople, loadWeather,
   weatherLocation, temperatureUnit,
 } from "./dayData";
-import { dueTodosFor, dueRemindersFor, reminderWhen, upcomingBirthdays } from "./derive";
+import { dueRemindersFor, reminderWhen, upcomingBirthdays } from "./derive";
 import type { TodayWidget, TodayWidgetProps } from "./types";
 import { summarizeDay, hasDayContent, type DaySummaryInput } from "../../lib/ai";
 import { englishCondition, isForecastable } from "../../lib/weather";
@@ -24,7 +24,6 @@ import { isAssistantConfigured } from "../../lib/secrets";
 import { currentLanguage } from "../../lib/i18n";
 import { isOverdue, ageFromBirthday, toDateInput } from "../../lib/format";
 
-const PRIORITY_NAMES = ["none", "low", "medium", "high"];
 /** How far ahead the summary looks for birthdays. The tile shows 30 days, but a
  *  briefing about *today* only cares about the ones nearly here. */
 const BIRTHDAY_HORIZON_DAYS = 7;
@@ -97,8 +96,8 @@ function writeCache(dayKey: string, entry: SummaryEntry): void {
  * A real change to the day regenerates it — but only once the standing briefing
  * is older than `summaryMaxAgeMs()` (6 hours by default, off in Settings for
  * anyone who'd rather have it always current). This is the app's only request
- * the user didn't ask for, and without the hold, a morning of ticking todos off
- * buys a rewrite per tick. Age is checked when the facts change or the card
+ * the user didn't ask for, and without the hold, a morning of ticking reminders
+ * off buys a rewrite per tick. Age is checked when the facts change or the card
  * mounts, not on a timer: nothing is billed while nobody is looking.
  *
  * A failure isn't worth shouting about — the other cards carry the same
@@ -163,7 +162,6 @@ function Summary({ day, viewingToday, revision }: TodayWidgetProps) {
   const unit = temperatureUnit();
 
   const events = useAsync(() => loadEvents(day, revision), [day.getTime(), revision]);
-  const todos = useAsync(() => loadTodos(revision), [revision]);
   const reminders = useAsync(() => loadReminders(revision), [revision]);
   const people = useAsync(() => loadPeople(revision), [revision]);
   const weather = useAsync(
@@ -173,7 +171,6 @@ function Summary({ day, viewingToday, revision }: TodayWidgetProps) {
     [day.getTime(), revision, unit, location?.latitude, location?.longitude],
   );
 
-  const dueTodos = dueTodosFor(todos.data ?? [], day, viewingToday);
   const dueReminders = dueRemindersFor(reminders.data ?? [], day, viewingToday);
   const birthdays = upcomingBirthdays(people.data ?? [], BIRTHDAY_HORIZON_DAYS, day);
 
@@ -196,12 +193,6 @@ function Summary({ day, viewingToday, revision }: TodayWidgetProps) {
         overdue: !r.rrule && !!when && isOverdue(when.toISOString()),
       };
     }),
-    todos: dueTodos.map((t) => ({
-      title: t.title,
-      due: t.due_at,
-      priority: PRIORITY_NAMES[t.priority] ?? "none",
-      overdue: isOverdue(t.due_at),
-    })),
     birthdays: birthdays.map((b) => {
       // The age they turn = their age *on the birthday itself*, which is what
       // ageFromBirthday returns for that date. Asking for it as of today and
@@ -238,7 +229,7 @@ function Summary({ day, viewingToday, revision }: TodayWidgetProps) {
   // Every input must have settled first. Writing the briefing before the
   // forecast lands would change the signature when it arrives and pay for a
   // second one saying nearly the same thing — and this request is billed.
-  const ready = !events.loading && !todos.loading && !reminders.loading
+  const ready = !events.loading && !reminders.loading
     && !people.loading && !weather.loading;
   const summary = useDaySummary(input, ready);
 

@@ -145,7 +145,7 @@ export interface AppSettings {
    * Hold the Today page's "Your day" briefing for `summaryMaxAgeHours` after it
    * was written, instead of rewriting it whenever the day's facts change. Purely
    * a spend control — that card is the app's only *automatic* billed request, so
-   * ticking off four todos otherwise buys four summaries. Off means the old
+   * ticking off four reminders otherwise buys four summaries. Off means the old
    * behaviour: any change to the day regenerates. The refresh button ignores
    * this either way.
    */

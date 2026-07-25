@@ -8,7 +8,7 @@ import { AlertTriangle } from "lucide-react";
  * Without this, every card renders in one tree and a throw anywhere blanks the
  * whole Today page — which is exactly what happened when the weather card read
  * `.length` off a field a stale cache entry didn't have. A widget is allowed to
- * fail; it is not allowed to take the calendar and to-do cards down with it.
+ * fail; it is not allowed to take the calendar and reminder cards down with it.
  *
  * This catches *render* bugs. A failed network call isn't one — widgets surface
  * those through `useAsync`'s `error` inside their own card, which keeps the

@@ -4,7 +4,7 @@
 // live here rather than in either — two copies would drift, and the briefing
 // would start describing a day the card doesn't show.
 
-import type { TodoRow, ReminderRow, PersonRow } from "../../types";
+import type { ReminderRow, PersonRow } from "../../types";
 import { startOfDay, isSameDay, isOverdue, fmtMonthDay, fmtRelativeDays, parseBirthday } from "../../lib/format";
 import { nextOccurrenceFrom } from "../../lib/recurrence";
 
@@ -22,19 +22,11 @@ export function reminderWhen(r: ReminderRow, day: Date): Date | null {
 }
 
 /**
- * To-dos to show against `day`.
+ * Reminders to show against `day`.
  *
  * Overdue is a fact about *now*, so it only pulls extra items onto the day when
  * that day is today. Any other date shows exactly what falls on it.
  */
-export function dueTodosFor(todos: TodoRow[], day: Date, viewingToday: boolean): TodoRow[] {
-  return todos.filter((t) => {
-    if (t.completed || !t.due_at) return false;
-    return isSameDay(new Date(t.due_at), day) || (viewingToday && isOverdue(t.due_at));
-  });
-}
-
-/** Reminders to show against `day`, by the same rule. */
 export function dueRemindersFor(reminders: ReminderRow[], day: Date, viewingToday: boolean): ReminderRow[] {
   return reminders.filter((r) => {
     if (r.completed) return false;

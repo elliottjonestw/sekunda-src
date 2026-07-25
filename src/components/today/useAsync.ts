@@ -14,7 +14,7 @@ export interface AsyncState<T> {
  *
  * Two deliberate behaviours:
  *
- * - **The previous value survives a reload.** Ticking a to-do bumps `revision`,
+ * - **The previous value survives a reload.** Ticking a reminder bumps `revision`,
  *   which re-runs every dependent load; blanking `data` first would flash the
  *   card to a skeleton on every checkbox click. This is also why the page
  *   doesn't use Suspense, which has no way to keep showing stale content

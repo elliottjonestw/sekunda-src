@@ -19,7 +19,7 @@
  * file also claims to own the account rows.
  */
 export const DATA_TABLES = [
-  "tags", "item_tags", "links", "events", "reminders", "lists", "todos",
+  "tags", "item_tags", "links", "events", "reminders",
   "notes", "note_images", "people", "person_custom_fields",
 ] as const;
 

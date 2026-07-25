@@ -10,13 +10,12 @@ import {
 import { notFound } from "../http";
 
 /**
- * All SQL touching `reminders`. Every statement binds `space_id`. Same shape as
- * db/todos.ts — the pattern proven in M2 — minus reorder (reminders have no
- * manual ordering) and with remind_at / rrule / linked_todo_id.
+ * All SQL touching `reminders`. Every statement binds `space_id`. Reminders
+ * have no manual ordering (no reorder), and carry remind_at / rrule.
  */
 
 const COLUMNS = `id, title, notes, due_at, remind_at, rrule, priority, completed,
-                 completed_at, linked_todo_id, sequence, created_at, updated_at`;
+                 completed_at, sequence, created_at, updated_at`;
 
 export async function listReminders(
   db: D1Database,
@@ -80,14 +79,14 @@ export async function createReminder(
   await db
     .prepare(
       `INSERT INTO reminders (id, space_id, title, notes, due_at, remind_at, rrule,
-         priority, completed, completed_at, linked_todo_id, sequence,
+         priority, completed, completed_at, sequence,
          created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,0,?,?)`,
+       VALUES (?,?,?,?,?,?,?,?,?,?,0,?,?)`,
     )
     .bind(
       input.id, spaceId, input.title, input.notes, input.due_at, input.remind_at,
       input.rrule, input.priority, input.completed, input.completed_at,
-      input.linked_todo_id, now, now,
+      now, now,
     )
     .run();
 
@@ -98,7 +97,7 @@ export async function createReminder(
 
 const PATCHABLE = [
   "title", "notes", "due_at", "remind_at", "rrule",
-  "priority", "completed", "completed_at", "linked_todo_id",
+  "priority", "completed", "completed_at",
 ] as const;
 
 export async function updateReminder(

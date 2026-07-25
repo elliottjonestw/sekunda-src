@@ -16,7 +16,7 @@ export interface TodayWidgetProps {
   viewingToday: boolean;
   /**
    * Bumped after any mutation anywhere on the page. Widgets include it in their
-   * fetch deps so ticking a to-do refreshes the cards that care, and it busts
+   * fetch deps so ticking a reminder refreshes the cards that care, and it busts
    * the shared per-day cache so they don't re-read what was just changed.
    */
   revision: number;

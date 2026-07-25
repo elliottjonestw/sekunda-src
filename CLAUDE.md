@@ -1,6 +1,6 @@
 # CLAUDE.md — Sekunda
 
-Life-management desktop app (Calendar, Reminders, To-Do, Notes, People) + optional AI assistant. Multi-user accounts, data in the cloud so it follows you between devices; reads fall back to a local cache offline, writes fail loudly. Tauri v2 + React 19 + TypeScript + Vite + Tailwind, on a Cloudflare Worker + D1 + KV backend.
+Life-management desktop app (Calendar, Reminders, Notes, Diary, People) + optional AI assistant. Multi-user accounts, data in the cloud so it follows you between devices; reads fall back to a local cache offline, writes fail loudly. Tauri v2 + React 19 + TypeScript + Vite + Tailwind, on a Cloudflare Worker + D1 + KV backend.
 
 **Golden rule: update [README.md](README.md) in the same session as any change to features, architecture, data model, permissions, or the AI toolset.**
 
@@ -58,7 +58,7 @@ npm run test:e2e         # wdio run wdio.conf.ts → e2e/*.spec.ts
 - **Never edit an applied migration.** Add `worker/migrations/000N_*.sql` and apply with `npm run worker:migrate` (local) / `migrate:staging` / `migrate:production`. D1 tracks what it has applied; editing a file it already ran leaves environments silently divergent. No registration step — wrangler picks the directory up.
 - **Notes FTS uses `trigram remove_diacritics 1`** (005): `unicode61` indexes a space-free CJK sentence as one token, and FTS5 accepts any codepoint >127 so the query "succeeds" with zero rows. Trigram can't answer queries under 3 chars (most Chinese words are 2), so `searchNotes` routes those to `LIKE`. Keep both paths; both must AND the terms.
 - **Note images live in `note_images`, never inline in `notes.body`** (body holds `![alt](sbimg:<id>)`). A data URI there hits `listNotes` — `SELECT *` on every search keystroke — *and* the trigram index: measured, one 300KB image costs a 638KB index inline vs 331 bytes split out. Base64 `TEXT` through the plugin bridge is not the bottleneck people assume — 400KB round-trips intact in ~3ms write / ~1ms read (`e2e/noteImages.spec.ts`).
-- **No foreign keys anywhere in this schema.** `PRAGMA foreign_keys = ON` in 001 applies to the *migration* connection, so `ON DELETE CASCADE` silently never fires. Delete children explicitly in `db.ts` (`deleteTodo` for subtasks, `deleteNote` for images).
+- **No foreign keys anywhere in this schema.** `PRAGMA foreign_keys = ON` in 001 applies to the *migration* connection, so `ON DELETE CASCADE` silently never fires. Delete children explicitly in `db.ts` (`deleteNote` for images).
 - **NFC-normalize identity keys** (`normalizeKey`) — macOS IMEs emit NFD, SQLite compares byte-wise, `tags.name` is UNIQUE, so one visible tag becomes two rows.
 - **Sort text client-side with `Intl.Collator`** — no `COLLATE UNICODE` without ICU; `NOCASE` folds ASCII only.
 
@@ -159,7 +159,7 @@ npm run test:e2e         # wdio run wdio.conf.ts → e2e/*.spec.ts
 - **Toolbar/paste inserts go in through `insertLine`**, which adds a newline on either side only when there isn't one — hard-coding `\n\n` leaves blank lines all through a note.
 - **Image inserts drop a placeholder token first, then swap it** — encode + write are async while the user types, so resolving the caret after the await misplaces the image. The swap matches `(token)` with parens: bare `pending-1` also matches inside `pending-11`.
 - **Icons: `lucide-react` only, no emoji.**
-- **Deep-linking into a view = `NavTarget` key + a prop consumed on mount** (`navigate` in `App.tsx`). Todos/Reminders/People guard with an `opened` ref so closing the detail can't re-open it.
+- **Deep-linking into a view = `NavTarget` key + a prop consumed on mount** (`navigate` in `App.tsx`). Reminders/People guard with an `opened` ref so closing the detail can't re-open it.
 - **An event target needs `NavTarget.eventStart`, not just `eventId`.** `CalendarView` resolves a target out of the occurrences loaded for the *visible* window, so an id alone silently opens nothing whenever the event is outside it — invisible from Today (always same-day), routine from search. `eventStart` seeds the cursor's month and picks the right instance of a recurring series.
 
 **Assistant surfaces**
@@ -175,7 +175,7 @@ npm run test:e2e         # wdio run wdio.conf.ts → e2e/*.spec.ts
 
 - **Every user-facing string goes through `t()`.** English (`src/locales/en/app.json`) is the source of truth — `@types/i18next.d.ts` derives the key union from it, so a missing key is a compile error and both catalogs must stay in sync.
 - **Model-facing text stays English:** `SYSTEM_PROMPT`, `TOOLS` descriptions, tool `{ error }` results. `ai.ts` imports the *unlocalized* date-fns `format` for the same reason.
-- **`t` gets shadowed** by rows named `t` (`todos.map((t) => …)`) — alias the hook: `const { t: tr } = useTranslation()`.
+- **`t` gets shadowed** by rows named `t` (`tags.map((t) => …)`) — alias the hook: `const { t: tr } = useTranslation()`.
 - **Use `lib/format.ts` helpers, never raw date-fns patterns** — they go through `Intl.DateTimeFormat` because `"MMM d"` gives `7月 20` in Chinese (correct: `7月20日`) and `"h a"` gives `1 下午` (correct: `下午1時`). date-fns still decides `weekStartsOn`. The locale lives in `format.ts`; don't thread one through call sites.
 - **`<html lang>` is set at runtime** — CJK is Han-unified, so a wrong `lang` shows a Traditional reader Japanese glyphs, and it drives the default TTS voice.
 - **Adding a language:** catalog in `src/locales/<code>/`, entry in `LANGUAGES`, case in `matchSystemLanguage`, locale in `DATE_LOCALES`.
@@ -245,7 +245,7 @@ src/
         today/   registry · types · CardShell · CardBoundary · useAsync · dayData ·
                  derive · <Name>Widget    # one file per Today card
         assistant/  useAssistantChat · MessageList · Composer · AssistantPopup
-  views/       Today · Calendar · Reminders · Todos · Notes · People · Mail · Assistant · Settings · Search
+  views/       Today · Calendar · Reminders · Notes · People · Mail · Assistant · Settings · Search
 test/          # unit tests for pure client logic (not in tsconfig — see npm test)
 e2e/           # WebDriver specs (real app only; not in tsconfig)
 packages/shared/  # zod schemas + inferred types, matchQuery ranking, normalizeKey,

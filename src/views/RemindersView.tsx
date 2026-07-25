@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Bell, Trash2, Inbox, CalendarClock, Flag, CheckCircle2, LucideIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import type { ReminderRow, TodoRow } from "../types";
+import type { ReminderRow } from "../types";
 import {
-  listReminders, upsertReminder, toggleReminder, deleteReminder, listTodos, allLinkTargets,
+  listReminders, upsertReminder, toggleReminder, deleteReminder, allLinkTargets,
 } from "../db";
 import { Button, Modal, PriorityFlag, priorityKey } from "../components/ui";
 import { TagEditor, LinksPanel, PeoplePanel, LinkTarget } from "../components/ItemMeta";
@@ -61,7 +61,7 @@ export default function RemindersView({ onChange, initialId }: { onChange: () =>
     if (!newTitle.trim()) return;
     await upsertReminder({
       title: newTitle.trim(), notes: null, due_at: null, remind_at: null,
-      rrule: null, priority: 0, completed: 0, completed_at: null, linked_todo_id: null,
+      rrule: null, priority: 0, completed: 0, completed_at: null,
     });
     setNewTitle("");
     bump();
@@ -166,11 +166,9 @@ function ReminderDetail({ reminder, onClose, onSaved }: { reminder: ReminderRow;
   const [remind, setRemind] = useState(reminder.remind_at ? toLocalInput(new Date(reminder.remind_at)) : "");
   const [priority, setPriority] = useState(reminder.priority);
   const [rrule, setRrule] = useState<string | null>(reminder.rrule);
-  const [linkedTodo, setLinkedTodo] = useState(reminder.linked_todo_id ?? "");
-  const [todos, setTodos] = useState<TodoRow[]>([]);
   const [targets, setTargets] = useState<LinkTarget[]>([]);
 
-  useEffect(() => { void listTodos().then(setTodos); void allLinkTargets().then(setTargets); }, []);
+  useEffect(() => { void allLinkTargets().then(setTargets); }, []);
 
   async function save() {
     await upsertReminder({
@@ -178,7 +176,6 @@ function ReminderDetail({ reminder, onClose, onSaved }: { reminder: ReminderRow;
       due_at: due ? fromLocalInput(due) : null,
       remind_at: remind ? fromLocalInput(remind) : null,
       rrule, priority, completed: reminder.completed, completed_at: reminder.completed_at,
-      linked_todo_id: linkedTodo || null,
     });
     onSaved();
     onClose();
@@ -196,7 +193,7 @@ function ReminderDetail({ reminder, onClose, onSaved }: { reminder: ReminderRow;
     >
       <div className="space-y-3">
         <input value={title} onChange={(e) => setTitle(e.target.value)} className="w-full rounded-lg border border-neutral-200 px-3 py-2 dark:border-neutral-600 dark:bg-neutral-700" />
-        <textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder={t("todos.notesPlaceholder")} rows={2} className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-sm dark:border-neutral-600 dark:bg-neutral-700" />
+        <textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder={t("reminders.notesPlaceholder")} rows={2} className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-sm dark:border-neutral-600 dark:bg-neutral-700" />
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <label className="text-sm">
             <span className="mb-1 block text-xs text-neutral-500">{t("reminders.dueLabel")}</span>
@@ -209,7 +206,7 @@ function ReminderDetail({ reminder, onClose, onSaved }: { reminder: ReminderRow;
         </div>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <label className="text-sm">
-            <span className="mb-1 block text-xs text-neutral-500">{t("todos.priority")}</span>
+            <span className="mb-1 block text-xs text-neutral-500">{t("reminders.priority")}</span>
             <select value={priority} onChange={(e) => setPriority(Number(e.target.value))} className="w-full rounded border border-neutral-200 px-2 py-1.5 dark:border-neutral-600 dark:bg-neutral-700">
               {[0, 1, 2, 3].map((i) => <option key={i} value={i}>{t(priorityKey(i))}</option>)}
             </select>
@@ -221,13 +218,6 @@ function ReminderDetail({ reminder, onClose, onSaved }: { reminder: ReminderRow;
             </select>
           </label>
         </div>
-        <label className="block text-sm">
-          <span className="mb-1 block text-xs text-neutral-500">{t("reminders.linkedTodo")}</span>
-          <select value={linkedTodo} onChange={(e) => setLinkedTodo(e.target.value)} className="w-full rounded border border-neutral-200 px-2 py-1.5 dark:border-neutral-600 dark:bg-neutral-700">
-            <option value="">{t("reminders.noLinkedTodo")}</option>
-            {todos.map((t) => <option key={t.id} value={t.id}>{t.title}</option>)}
-          </select>
-        </label>
 
         <hr className="border-neutral-200 dark:border-neutral-700" />
         <TagEditor type="reminder" id={reminder.id} />

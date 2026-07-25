@@ -58,19 +58,13 @@ export interface NewUser {
  * separate statement would otherwise cost its own ~105 ms round-trip to the
  * primary.
  *
- * Default lists are created here rather than by a migration because migration
- * 002 used to seed them with the fixed ids 'personal'/'work', and fixed ids
- * cannot exist once rows are per-space. This is where ensureDefaultLists'
- * "always at least one list" invariant now lives.
- *
- * `extra` is any further seed content (the welcome to-do/reminder/note/event —
- * see db/onboarding.ts) that must land in the *same* atomic batch, so a new
+ * `extra` is any further seed content (the welcome reminder/note/event — see
+ * db/onboarding.ts) that must land in the *same* atomic batch, so a new
  * account is never half-populated.
  */
 export async function createUserWithSpace(
   db: D1Database,
   u: NewUser,
-  defaultLists: { id: string; name: string; color: string }[],
   extra: D1PreparedStatement[] = [],
 ): Promise<void> {
   const stmts = [
@@ -92,11 +86,6 @@ export async function createUserWithSpace(
         "INSERT INTO space_members (space_id, user_id, role, created_at) VALUES (?,?,?,?)",
       )
       .bind(u.spaceId, u.id, "owner" satisfies Role, u.now),
-    ...defaultLists.map((l) =>
-      db
-        .prepare("INSERT INTO lists (id, space_id, name, color) VALUES (?,?,?,?)")
-        .bind(l.id, u.spaceId, l.name, l.color),
-    ),
     ...extra,
   ];
   await db.batch(stmts);

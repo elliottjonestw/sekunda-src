@@ -1,5 +1,5 @@
 // Reusable Tags + Links panel. Drop it into any item's detail/edit view; it
-// works for events, reminders, todos, and notes uniformly via the shared
+// works for events, reminders, and notes uniformly via the shared
 // item_tags and links tables — the whole point of the cross-linking design.
 
 import { useEffect, useState } from "react";

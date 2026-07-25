@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CloudOff, NotebookPen } from "lucide-react";
 import type { ItemType, GoTo } from "../types";
-import { searchNotes, searchPeople, searchReminders, searchTodos } from "../db";
+import { searchNotes, searchPeople, searchReminders } from "../db";
 import { searchEvents, listCalendars, getCalendar } from "../lib/calendars";
 import { getMailSettings } from "../lib/settings";
 import { searchMail, type MailMessageSummary } from "../lib/mail";
@@ -121,10 +121,9 @@ export default function SearchView({ query, goTo }: { query: string; goTo: GoTo 
     let cancelled = false;
     const timer = setTimeout(() => {
       void (async () => {
-        const [events, reminders, todos, noteRows, people] = await Promise.all([
+        const [events, reminders, noteRows, people] = await Promise.all([
           searchEvents(q, winStart, winEnd),
           searchReminders(q),
-          searchTodos(q),
           // No kind filter: this is the one place notes and diary are searched
           // together, then split by kind so each routes to the right view.
           searchNotes(q),
@@ -161,7 +160,6 @@ export default function SearchView({ query, goTo }: { query: string; goTo: GoTo 
             };
           }),
           ...reminders.map((r) => ({ type: "reminder" as ItemType, id: r.id, label: r.title, sub: r.due_at ? t("card.due", { when: fmtDateTime(r.due_at) }) : "" })),
-          ...todos.map((td) => ({ type: "todo" as ItemType, id: td.id, label: td.title, sub: td.due_at ? t("card.due", { when: fmtDateTime(td.due_at) }) : "" })),
           ...notes.map((n) => ({ type: "note" as ItemType, id: n.id, label: n.title || t("common.untitled"), sub: (n.body ?? "").slice(0, 60) })),
           ...people.map((p) => ({ type: "person" as ItemType, id: p.id, label: p.full_name || t("people.newContact"), sub: p.organization || p.nickname || "" })),
         ]);

@@ -2,7 +2,7 @@
 //
 // Views used to mount with `useState([])` and fill in when the API answered,
 // so arriving on a page showed an empty list — indistinguishable from "you have
-// no to-dos" — for as long as the round-trip took. This shows a loading state
+// no reminders" — for as long as the round-trip took. This shows a loading state
 // instead, with two rules that keep a user from ever being stranded on it:
 //
 //  - **A load that fails is a page, not a spinner.** Errors resolve to a retry

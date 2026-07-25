@@ -45,7 +45,7 @@ export function turnstileRequired(env: Bindings, req: Request): boolean {
  * Whether a REGISTRATION must pass a Turnstile challenge — everywhere.
  *
  * Registration is the one unauthenticated endpoint that spends a quota which
- * strangers can reach: each call mints an account, a space, two lists, the
+ * strangers can reach: each call mints an account, a space, the
  * welcome seed rows, and one Resend message against a ~100-a-day allowance. The
  * per-origin exemption above is what a script trivially satisfies — a bare
  * fetch sends no `Origin` at all — so on this endpoint the exemption IS the

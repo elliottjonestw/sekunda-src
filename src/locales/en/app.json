@@ -8,7 +8,6 @@
     "today": "Today",
     "calendar": "Calendar",
     "reminders": "Reminders",
-    "todos": "To-Do",
     "notes": "Notes",
     "diary": "Diary",
     "people": "People",
@@ -47,7 +46,6 @@
   "itemType": {
     "event": "Event",
     "reminder": "Reminder",
-    "todo": "Todo",
     "note": "Note",
     "diary": "Diary",
     "person": "Person",
@@ -148,7 +146,7 @@
   "demo": {
     "title": "Load demo data?",
     "confirm": "Reset & load demo",
-    "body": "You found the secret! This will <strong>permanently delete all of your current events, reminders, to-dos, notes, lists, tags, and links</strong>, then fill the app with a sample dataset to explore.",
+    "body": "You found the secret! This will <strong>permanently delete all of your current events, reminders, notes, tags, and links</strong>, then fill the app with a sample dataset to explore.",
     "irreversible": "This cannot be undone."
   },
   "settings": {
@@ -256,7 +254,7 @@
       "webSearchLabel": "Let the assistant look things up online",
       "summaryThrottle": "Today briefing",
       "summaryThrottleLabel": "Keep the written briefing for a while",
-      "summaryThrottleHint": "The Today page's “Your day” card is the only thing the app writes without being asked. Holding it means a change to your day — ticking off a todo, adding an event — won't rewrite it until it's this old. The refresh button on the card always rewrites it.",
+      "summaryThrottleHint": "The Today page's “Your day” card is the only thing the app writes without being asked. Holding it means a change to your day — ticking off a reminder, adding an event — won't rewrite it until it's this old. The refresh button on the card always rewrites it.",
       "summaryHours": "hours",
       "apiKeyScopeHint": "It's stored in plain text on this device and cleared when you sign out, so use a key you keep for this app alone and set a spend limit on it — and revoke it here if you lose the device.",
       "manageKeys": "OpenAI API keys"
@@ -315,7 +313,7 @@
       "title": "Data",
       "description": "Back up everything the app holds for you to a single file, or restore from one. Your OpenAI key and iCloud account are excluded — they stay on this device only.",
       "exportHeading": "Export",
-      "exportHint": "Saves all your events, reminders, to-dos, notes, people, lists, tags and links to a JSON file.",
+      "exportHint": "Saves all your events, reminders, notes, people, tags and links to a JSON file.",
       "exportButton": "Export data",
       "exporting": "Exporting…",
       "exported": "Exported.",
@@ -330,10 +328,10 @@
       "errorInvalid": "That file isn't a valid Sekunda backup.",
       "errorNewer": "This backup was made by a newer version of Sekunda. Update the app before restoring it.",
       "resetHeading": "Reset",
-      "resetHint": "Permanently delete all your events, reminders, to-dos, notes, people, lists, tags and links. Your OpenAI key and iCloud connection are left untouched. Export a backup first if you might want this data back.",
+      "resetHint": "Permanently delete all your events, reminders, notes, people, tags and links. Your OpenAI key and iCloud connection are left untouched. Export a backup first if you might want this data back.",
       "resetButton": "Reset all data",
       "resetting": "Resetting…",
-      "confirmReset": "This permanently deletes ALL data in the app — every event, reminder, to-do, note, person, list and tag. This cannot be undone. Continue?"
+      "confirmReset": "This permanently deletes ALL data in the app — every event, reminder, note, person and tag. This cannot be undone. Continue?"
     },
     "account": {
       "title": "Account",
@@ -345,37 +343,12 @@
       "sending": "Sending…",
       "verificationSent": "Confirmation email sent. Check your inbox.",
       "deleteHeading": "Delete account",
-      "deleteHint": "Removes the account, its space, and everything in it — calendar, reminders, to-dos, notes, people and images. This cannot be undone, and it is not the same as \"clear all data\", which keeps the account.",
+      "deleteHint": "Removes the account, its space, and everything in it — calendar, reminders, notes, people and images. This cannot be undone, and it is not the same as \"clear all data\", which keeps the account.",
       "confirmWithPassword": "Enter your password to confirm",
       "deleteButton": "Delete my account",
       "deleting": "Deleting…",
       "confirmDelete": "Delete this account permanently? Everything in it will be erased and cannot be recovered."
     }
-  },
-  "todos": {
-    "lists": "Lists",
-    "defaultListName": "Personal",
-    "newList": "New list",
-    "deleteList": "Delete list",
-    "confirmDeleteList": "Delete list \"{{name}}\"? Its tasks move to another list.",
-    "listNamePlaceholder": "List name…",
-    "listAlreadyExists": "A list named \"{{name}}\" already exists.",
-    "addTaskPlaceholder": "Add a task…",
-    "confirmDeleteTask": "Delete task \"{{title}}\"? Any subtasks are removed too.",
-    "confirmDeleteSubtask": "Delete subtask \"{{title}}\"?",
-    "deleteTask": "Delete task",
-    "empty": "No tasks in this list yet.",
-    "taskTitle": "Task",
-    "convertToEvent": "Convert to event",
-    "convertedToEvent": "Created a calendar event from this task.",
-    "notesPlaceholder": "Notes…",
-    "list": "List",
-    "priority": "Priority",
-    "dueDate": "Due date (shows on calendar)",
-    "subtasks": "Subtasks",
-    "addSubtask": "Add subtask…",
-    "offlineSave": "You're offline — changes can't be saved until you reconnect.",
-    "saveFailed": "Couldn't save that. Please try again."
   },
   "recurrence": {
     "none": "Does not repeat",
@@ -401,8 +374,8 @@
     "empty": "No reminders here.",
     "dueLabel": "Due",
     "alertAt": "Alert at",
-    "linkedTodo": "Linked to-do",
-    "noLinkedTodo": "None"
+    "notesPlaceholder": "Notes…",
+    "priority": "Priority"
   },
   "event": {
     "repeat": "Repeat",
@@ -608,13 +581,13 @@
   },
   "assistant": {
     "title": "AI Assistant",
-    "needKey": "Set up the assistant in Settings — add an OpenAI API key — to ask questions about your events, to-dos, reminders, and notes.",
+    "needKey": "Set up the assistant in Settings — add an OpenAI API key — to ask questions about your events, reminders, and notes.",
     "voiceNeedsKey": "Voice input needs an OpenAI API key (transcription runs on OpenAI). Add a key in Settings.",
     "openSettings": "Open Settings",
     "emptyPrompt": "Ask me anything about your data — type below or tap the mic to talk. For example:",
     "suggestion1": "What's on my calendar today?",
-    "suggestion2": "Which to-dos are overdue?",
-    "suggestion3": "Add a to-do to call the dentist tomorrow at 2pm",
+    "suggestion2": "Which reminders are overdue?",
+    "suggestion3": "Add a reminder to call the dentist tomorrow at 2pm",
     "suggestion4": "Create a Work note titled 'Sprint goals'",
     "transcribing": "Transcribing…",
     "notHeard": "Didn't catch that — try again.",
@@ -647,18 +620,14 @@
       "cancelled": "Cancelled",
       "deleting": "Deleting…",
       "type": {
-        "todo": "to-do",
         "event": "event",
         "reminder": "reminder",
         "note": "note",
-        "person": "contact",
-        "list": "list"
+        "person": "contact"
       }
     }
   },
-  "notifications": {
-    "todoDue": "Todo due"
-  },
+  "notifications": {},
   "errors": {
     "noApiKey": "No OpenAI API key set. Add one in Settings.",
     "notConfigured": "The assistant isn't set up yet. Add an OpenAI API key in Settings.",
@@ -670,7 +639,6 @@
   },
   "status": {
     "overview": "Getting an overview…",
-    "searchTodos": "Searching to-dos…",
     "searchEvents": "Checking the calendar…",
     "listCalendars": "Looking at your calendars…",
     "searchReminders": "Searching reminders…",
@@ -686,8 +654,6 @@
     "webSearch": "Searching the web…",
     "webSearchFor": "Searching the web for “{{query}}”…",
     "showItems": "Pulling up the items…",
-    "createTodo": "Creating a to-do…",
-    "updateTodo": "Updating a to-do…",
     "createEvent": "Adding a calendar event…",
     "updateEvent": "Updating an event…",
     "createReminder": "Creating a reminder…",
@@ -695,19 +661,16 @@
     "createNote": "Creating a note…",
     "updateNote": "Updating a note…",
     "writeDiaryEntry": "Writing in your diary…",
-    "createList": "Creating a list…",
     "createPerson": "Adding a contact…",
     "updatePerson": "Updating a contact…",
     "addTag": "Adding a tag…",
     "linkItems": "Linking items…",
     "unlinkItems": "Unlinking items…",
-    "deleteTodo": "Deleting a to-do…",
     "deleteEvent": "Deleting an event…",
     "deleteReminder": "Deleting a reminder…",
     "deleteNote": "Deleting a note…",
     "deleteDiaryEntry": "Deleting a diary entry…",
     "deletePerson": "Deleting a contact…",
-    "deleteList": "Deleting a list…",
     "working": "Working…",
     "thinking": "Thinking…",
     "speaking": "Speaking…",

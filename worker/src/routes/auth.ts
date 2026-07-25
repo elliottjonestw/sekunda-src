@@ -157,7 +157,7 @@ auth.post("/auth/kdf", async (c) => {
 });
 
 /**
- * Create an account, its personal space, and default lists.
+ * Create an account and its personal space.
  *
  * The client generates its own KDF salt here rather than fetching one, which
  * keeps registration to a single round-trip. A client choosing a poor salt only
@@ -236,9 +236,6 @@ auth.post("/auth/register", async (c) => {
     email_verified_at: null,
   };
 
-  // The Personal list's id is captured so the welcome to-do can be filed under
-  // it in the same batch.
-  const personalListId = crypto.randomUUID();
   await createUserWithSpace(
     c.env.DB,
     {
@@ -253,13 +250,8 @@ auth.post("/auth/register", async (c) => {
       spaceName: normalizeKey(body.space_name ?? "Personal"),
       now: user.created_at,
     },
-    [
-      { id: personalListId, name: "Personal", color: "#3b82f6" },
-      { id: crypto.randomUUID(), name: "Work", color: "#ef4444" },
-    ],
     seedWelcomeStatements(c.env.DB, {
       spaceId,
-      listId: personalListId,
       now: user.created_at,
       tzOffsetMinutes: body.tz_offset ?? 0,
     }),

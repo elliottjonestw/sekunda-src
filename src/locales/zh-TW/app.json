@@ -8,7 +8,6 @@
     "today": "今天",
     "calendar": "行事曆",
     "reminders": "提醒事項",
-    "todos": "待辦事項",
     "notes": "備忘錄",
     "diary": "日記",
     "people": "聯絡人",
@@ -47,7 +46,6 @@
   "itemType": {
     "event": "行程",
     "reminder": "提醒",
-    "todo": "待辦",
     "note": "備忘錄",
     "diary": "日記",
     "person": "聯絡人",
@@ -147,7 +145,7 @@
   "demo": {
     "title": "載入示範資料？",
     "confirm": "重設並載入示範資料",
-    "body": "你發現隱藏功能了！這將<strong>永久刪除你目前所有的行程、提醒事項、待辦事項、備忘錄、清單、標籤與連結</strong>，然後以一組範例資料填入應用程式供你探索。",
+    "body": "你發現隱藏功能了！這將<strong>永久刪除你目前所有的行程、提醒事項、備忘錄、標籤與連結</strong>，然後以一組範例資料填入應用程式供你探索。",
     "irreversible": "此動作無法復原。"
   },
   "settings": {
@@ -255,7 +253,7 @@
       "webSearchLabel": "允許助理上網查詢資料",
       "summaryThrottle": "今日摘要",
       "summaryThrottleLabel": "已產生的摘要保留一段時間",
-      "summaryThrottleHint": "今日頁面的「你的一天」是本程式唯一未經你要求就自動產生的內容。保留期間內，即使當天的資料有變動（勾選待辦、新增行程），也不會重新產生；超過這個時數才會。卡片上的重新整理按鈕則一律重寫。",
+      "summaryThrottleHint": "今日頁面的「你的一天」是本程式唯一未經你要求就自動產生的內容。保留期間內，即使當天的資料有變動（勾選提醒、新增行程），也不會重新產生；超過這個時數才會。卡片上的重新整理按鈕則一律重寫。",
       "summaryHours": "小時",
       "apiKeyScopeHint": "金鑰以純文字儲存在此裝置上，登出時會清除。請使用僅供本 App 使用的金鑰並設定用量上限；裝置遺失時可在此撤銷。",
       "manageKeys": "OpenAI API 金鑰頁面"
@@ -312,7 +310,7 @@
       "title": "資料",
       "description": "將應用程式為你保存的所有內容備份成單一檔案，或從檔案還原。你的 OpenAI 金鑰與 iCloud 帳戶不會包含在內——它們只留在這部裝置上。",
       "exportHeading": "匯出",
-      "exportHint": "將你所有的活動、提醒、待辦事項、筆記、聯絡人、清單、標籤與連結儲存為 JSON 檔案。",
+      "exportHint": "將你所有的活動、提醒、筆記、聯絡人、標籤與連結儲存為 JSON 檔案。",
       "exportButton": "匯出資料",
       "exporting": "匯出中…",
       "exported": "已匯出。",
@@ -327,10 +325,10 @@
       "errorInvalid": "該檔案不是有效的 Sekunda 備份。",
       "errorNewer": "此備份是由較新版本的 Sekunda 所建立。請先更新應用程式再匯入。",
       "resetHeading": "重設",
-      "resetHint": "永久刪除你所有的活動、提醒、待辦事項、筆記、聯絡人、清單、標籤與連結。你的 OpenAI 金鑰與 iCloud 連線不受影響。若日後可能需要這些資料，請先匯出備份。",
+      "resetHint": "永久刪除你所有的活動、提醒、筆記、聯絡人、標籤與連結。你的 OpenAI 金鑰與 iCloud 連線不受影響。若日後可能需要這些資料，請先匯出備份。",
       "resetButton": "重設所有資料",
       "resetting": "重設中…",
-      "confirmReset": "這會永久刪除應用程式中的所有資料——每一項活動、提醒、待辦事項、筆記、聯絡人、清單與標籤，且無法復原。要繼續嗎？"
+      "confirmReset": "這會永久刪除應用程式中的所有資料——每一項活動、提醒、筆記、聯絡人與標籤，且無法復原。要繼續嗎？"
     },
     "account": {
       "title": "帳號",
@@ -342,37 +340,12 @@
       "sending": "寄送中…",
       "verificationSent": "確認信已寄出，請查看你的收件匣。",
       "deleteHeading": "刪除帳號",
-      "deleteHint": "將刪除帳號、所屬空間，以及其中所有內容 — 行事曆、提醒、待辦、筆記、人物與圖片。此操作無法復原，也不同於「清除所有資料」（後者會保留帳號）。",
+      "deleteHint": "將刪除帳號、所屬空間，以及其中所有內容 — 行事曆、提醒、筆記、人物與圖片。此操作無法復原，也不同於「清除所有資料」（後者會保留帳號）。",
       "confirmWithPassword": "輸入密碼以確認",
       "deleteButton": "刪除我的帳號",
       "deleting": "刪除中…",
       "confirmDelete": "確定要永久刪除這個帳號嗎？其中所有內容都會被抹除且無法復原。"
     }
-  },
-  "todos": {
-    "lists": "清單",
-    "defaultListName": "個人",
-    "newList": "新增清單",
-    "deleteList": "刪除清單",
-    "confirmDeleteList": "要刪除清單「{{name}}」嗎？其中的任務會移至其他清單。",
-    "listNamePlaceholder": "清單名稱…",
-    "listAlreadyExists": "名為「{{name}}」的清單已經存在。",
-    "addTaskPlaceholder": "新增任務…",
-    "confirmDeleteTask": "要刪除任務「{{title}}」嗎？其子任務也會一併移除。",
-    "confirmDeleteSubtask": "要刪除子任務「{{title}}」嗎？",
-    "deleteTask": "刪除任務",
-    "empty": "此清單尚無任務。",
-    "taskTitle": "任務",
-    "convertToEvent": "轉換為行程",
-    "convertedToEvent": "已從此任務建立行事曆行程。",
-    "notesPlaceholder": "備註…",
-    "list": "清單",
-    "priority": "優先順序",
-    "dueDate": "到期日（顯示於行事曆）",
-    "subtasks": "子任務",
-    "addSubtask": "新增子任務…",
-    "offlineSave": "你目前離線 — 重新連線後才能儲存變更。",
-    "saveFailed": "無法儲存，請再試一次。"
   },
   "recurrence": {
     "none": "不重複",
@@ -398,8 +371,8 @@
     "empty": "這裡沒有提醒事項。",
     "dueLabel": "到期",
     "alertAt": "提醒時間",
-    "linkedTodo": "連結的待辦事項",
-    "noLinkedTodo": "無"
+    "notesPlaceholder": "備註…",
+    "priority": "優先順序"
   },
   "event": {
     "repeat": "重複",
@@ -604,13 +577,13 @@
   },
   "assistant": {
     "title": "AI 助理",
-    "needKey": "請在「設定」中設定助理 —— 加入 OpenAI API 金鑰 —— 即可詢問行程、待辦事項、提醒事項與備忘錄。",
+    "needKey": "請在「設定」中設定助理 —— 加入 OpenAI API 金鑰 —— 即可詢問行程、提醒事項與備忘錄。",
     "voiceNeedsKey": "語音輸入需要 OpenAI API 金鑰（轉錄由 OpenAI 執行）。請在「設定」中加入金鑰。",
     "openSettings": "開啟設定",
     "emptyPrompt": "任何關於你資料的問題都可以問我 —— 在下方輸入，或點麥克風用說的。例如：",
     "suggestion1": "我今天的行事曆有什麼？",
-    "suggestion2": "哪些待辦事項已經逾期？",
-    "suggestion3": "新增一項待辦：明天下午 2 點打給牙醫",
+    "suggestion2": "哪些提醒事項已經逾期？",
+    "suggestion3": "新增一項提醒：明天下午 2 點打給牙醫",
     "suggestion4": "建立一則標題為「衝刺目標」的工作備忘錄",
     "transcribing": "轉錄中…",
     "notHeard": "沒有聽清楚 —— 請再試一次。",
@@ -643,18 +616,14 @@
       "cancelled": "已取消",
       "deleting": "刪除中…",
       "type": {
-        "todo": "待辦事項",
         "event": "行程",
         "reminder": "提醒",
         "note": "筆記",
-        "person": "聯絡人",
-        "list": "清單"
+        "person": "聯絡人"
       }
     }
   },
-  "notifications": {
-    "todoDue": "待辦事項到期"
-  },
+  "notifications": {},
   "errors": {
     "noApiKey": "尚未設定 OpenAI API 金鑰，請在「設定」中加入。",
     "notConfigured": "助理尚未設定。請在「設定」中加入 OpenAI API 金鑰。",
@@ -666,7 +635,6 @@
   },
   "status": {
     "overview": "取得總覽中…",
-    "searchTodos": "搜尋待辦事項中…",
     "searchEvents": "查看行事曆中…",
     "listCalendars": "查看你的行事曆中…",
     "searchReminders": "搜尋提醒事項中…",
@@ -682,8 +650,6 @@
     "webSearch": "搜尋網路中…",
     "webSearchFor": "正在網路上搜尋「{{query}}」…",
     "showItems": "正在整理項目…",
-    "createTodo": "建立待辦事項中…",
-    "updateTodo": "更新待辦事項中…",
     "createEvent": "新增行事曆行程中…",
     "updateEvent": "更新行程中…",
     "createReminder": "建立提醒事項中…",
@@ -691,19 +657,16 @@
     "createNote": "建立備忘錄中…",
     "updateNote": "更新備忘錄中…",
     "writeDiaryEntry": "撰寫日記中…",
-    "createList": "建立清單中…",
     "createPerson": "新增聯絡人中…",
     "updatePerson": "更新聯絡人中…",
     "addTag": "新增標籤中…",
     "linkItems": "連結項目中…",
     "unlinkItems": "解除連結中…",
-    "deleteTodo": "刪除待辦事項中…",
     "deleteEvent": "刪除行程中…",
     "deleteReminder": "刪除提醒事項中…",
     "deleteNote": "刪除備忘錄中…",
     "deleteDiaryEntry": "刪除日記中…",
     "deletePerson": "刪除聯絡人中…",
-    "deleteList": "刪除清單中…",
     "working": "處理中…",
     "thinking": "思考中…",
     "speaking": "朗讀中…",

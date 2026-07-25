@@ -1,8 +1,8 @@
 /**
- * The welcome content a brand-new space is seeded with: one to-do, one
- * reminder, one note and one calendar event, all dated to the day the account
- * was created. Built as raw INSERTs (like the default lists in users.ts) so
- * they join the registration batch — one atomic write, no extra round-trips.
+ * The welcome content a brand-new space is seeded with: one reminder, one note
+ * and one calendar event, all dated to the day the account was created. Built
+ * as raw INSERTs so they join the registration batch — one atomic write, no
+ * extra round-trips.
  *
  * Everything is dated in the user's *local* day. The server has no timezone of
  * its own, so the client sends `Date.getTimezoneOffset()`; without it (a
@@ -13,23 +13,21 @@
 
 export interface SeedContext {
   spaceId: string;
-  /** The list the welcome to-do is filed under (the Personal default list). */
-  listId: string;
   /** ISO instant the account was created (users.created_at). */
   now: string;
   /** Client `Date.getTimezoneOffset()` in minutes (UTC − local); 0 if unknown. */
   tzOffsetMinutes: number;
 }
 
-const NOTE_BODY = `Welcome to Sekunda — your calendar, reminders, to-dos, notes and people in one place.
+const NOTE_BODY = `Welcome to Sekunda — your calendar, reminders, notes and people in one place.
 
 ## The basics
 - **Today** is your dashboard: the day's schedule, what's due, and quick notes at a glance.
-- **Calendar**, **Reminders**, **To-Do**, **Notes** and **People** each have their own section in the sidebar.
-- Everything connects: attach people to events, link a note to a to-do, and tag anything.
+- **Calendar**, **Reminders**, **Notes** and **People** each have their own section in the sidebar.
+- Everything connects: attach people to events, link a note to a reminder, and tag anything.
 
 ## Getting set up
-- Connect your Apple Calendar so your events show up here — there's a to-do to walk you through it.
+- Connect your Apple Calendar in **Settings → Calendars** so your events show up here.
 - Add your OpenAI API key in **Settings** to switch on the assistant and your daily "Your day" briefing.
 
 ## The assistant
@@ -38,7 +36,7 @@ Ask it about your schedule, or have it create and update items for you — by te
 You can delete this note whenever you like.`;
 
 /**
- * The four welcome rows as prepared statements, ready to append to the
+ * The three welcome rows as prepared statements, ready to append to the
  * registration batch. Column lists are explicit so table defaults
  * (`status`, `sequence`, `completed`, …) fill the rest.
  */
@@ -46,7 +44,7 @@ export function seedWelcomeStatements(
   db: D1Database,
   ctx: SeedContext,
 ): D1PreparedStatement[] {
-  const { spaceId, listId, now, tzOffsetMinutes: off } = ctx;
+  const { spaceId, now, tzOffsetMinutes: off } = ctx;
 
   // Read the local wall-clock day out of the UTC creation instant.
   const local = new Date(new Date(now).getTime() - off * 60000);
@@ -64,18 +62,6 @@ export function seedWelcomeStatements(
   const allDayStart = `${y}-${pad(mo + 1)}-${pad(d)}T00:00:00`;
 
   return [
-    // To-do: "Connect Apple Calendar", filed under the Personal list.
-    db
-      .prepare(
-        `INSERT INTO todos (id, space_id, title, notes, list_id, due_at, priority,
-                            position, created_at, updated_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?)`,
-      )
-      .bind(
-        crypto.randomUUID(), spaceId, "Connect Apple Calendar",
-        "Link iCloud in Settings → Calendars to see your Apple events here.",
-        listId, noon, 0, 0, now, now,
-      ),
     // Reminder: "Tell everyone about Sekunda".
     db
       .prepare(

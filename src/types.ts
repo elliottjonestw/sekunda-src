@@ -54,7 +54,6 @@ export interface NavTarget {
    * also picks the right instance of a recurring series.
    */
   eventStart?: string;
-  todoId?: string;
   reminderId?: string;
   personId?: string;
   /**
@@ -72,13 +71,8 @@ export type GoTo = (view: string, target?: NavTarget) => void;
 // EventRow is defined in @secondbrain/shared (like the other row types).
 export type { EventRow } from "@secondbrain/shared";
 
-// ReminderRow is defined in @secondbrain/shared (see TodoRow/ListRow above).
+// ReminderRow is defined in @secondbrain/shared (like the other row types).
 export type { ReminderRow } from "@secondbrain/shared";
-
-// TodoRow and ListRow are defined in @secondbrain/shared so the Worker returns
-// exactly the shape the client consumes. Re-exported here because the whole app
-// imports its domain types from "./types".
-export type { TodoRow, ListRow } from "@secondbrain/shared";
 
 // NoteRow is defined in @secondbrain/shared (the Worker returns it).
 export type { NoteRow } from "@secondbrain/shared";
@@ -123,7 +117,7 @@ export type { PersonRow, CustomFieldDef } from "@secondbrain/shared";
 // them). Re-exported here like the other row types.
 export type { TagRow, LinkRow } from "@secondbrain/shared";
 
-// Priority levels shared by reminders & todos (iCal-ish: 0 none, 1 low..9 high;
+// Priority levels for reminders (iCal-ish: 0 none, 1 low..9 high;
 // we keep it simple with 0/1/2/3).
 export const PRIORITY = { NONE: 0, LOW: 1, MEDIUM: 2, HIGH: 3 } as const;
 

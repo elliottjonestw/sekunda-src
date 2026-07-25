@@ -11,21 +11,21 @@
 // through lib/format so they render correctly in every locale.
 
 import { useEffect, useState } from "react";
-import { Calendar, Bell, ListChecks, StickyNote, NotebookPen, Users, LucideIcon } from "lucide-react";
+import { Calendar, Bell, StickyNote, NotebookPen, Users, LucideIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { ItemRef, CardType, NavTarget } from "../types";
-import { getTodo, getReminder, getNote, getPerson } from "../db";
+import { getReminder, getNote, getPerson } from "../db";
 import { getEventByRef, findEventById } from "../lib/calendars";
 import { nextOccurrenceFrom } from "../lib/recurrence";
 import { fmtDate, fmtDateTime, isOverdue, startOfDay } from "../lib/format";
 
 export const ITEM_ICON: Record<CardType, LucideIcon> = {
-  event: Calendar, reminder: Bell, todo: ListChecks, note: StickyNote, diary: NotebookPen, person: Users,
+  event: Calendar, reminder: Bell, note: StickyNote, diary: NotebookPen, person: Users,
 };
 
 /** Which view opens each item type. */
 export const VIEW_FOR: Record<CardType, string> = {
-  event: "calendar", reminder: "reminders", todo: "todos", note: "notes", diary: "diary", person: "people",
+  event: "calendar", reminder: "reminders", note: "notes", diary: "diary", person: "people",
 };
 
 /** The nav target that opens this item's detail once its view has mounted. */
@@ -35,7 +35,6 @@ export function targetFor(
   switch (type) {
     case "event": return { eventId: id, eventStart: occurrenceStart };
     case "reminder": return { reminderId: id };
-    case "todo": return { todoId: id };
     case "note": return { noteId: id };
     // The Diary view opens by day, not by row id (an entry IS a date).
     case "diary": return { diaryDate };
@@ -47,7 +46,7 @@ export interface ItemCardProps {
   type: CardType;
   label: string;
   sub?: string;
-  /** Completed to-do/reminder: dimmed and struck through. */
+  /** Completed reminder: dimmed and struck through. */
   done?: boolean;
   /** Past due and not done: the subtitle turns red. */
   overdue?: boolean;
@@ -85,12 +84,6 @@ interface Loaded {
 }
 
 async function load(ref: ItemRef, t: (k: any, o?: any) => string): Promise<Loaded | null> {
-  const due = (iso: string | null, completed: boolean) => ({
-    sub: iso ? t("card.due", { when: fmtDateTime(iso) }) : "",
-    done: completed,
-    overdue: !completed && isOverdue(iso),
-  });
-
   switch (ref.type) {
     case "event": {
       // A remote event has no SQLite row, so this goes through calendars.ts.
@@ -118,11 +111,6 @@ async function load(ref: ItemRef, t: (k: any, o?: any) => string): Promise<Loade
         done: !!r.completed,
         overdue: !r.completed && !r.rrule && isOverdue(iso),
       };
-    }
-    case "todo": {
-      const td = await getTodo(ref.id);
-      if (!td) return null;
-      return { label: td.title, ...due(td.due_at, !!td.completed) };
     }
     case "note": {
       const n = await getNote(ref.id);

@@ -25,10 +25,10 @@ import { ageFromBirthday, nextBirthday, allDayIsoFromDate } from "./format";
 import { LANGUAGES, currentLanguage } from "./i18n";
 import type { ItemRef, ItemType, UnifiedEvent } from "../types";
 import {
-  getEvent, listLists, listEvents, listNotes, getNote, listTodos, getTodo, listReminders, getReminder, listTags, itemIdsForTag, linksForItem, tagsForItem, getItemLabel, searchNotes, queryTerms,
+  getEvent, listEvents, listNotes, getNote, listReminders, getReminder, listTags, itemIdsForTag, linksForItem, tagsForItem, getItemLabel, searchNotes, queryTerms,
   matchQuery,
-  upsertTodo, upsertReminder, upsertNote, upsertList, tagItem, nowIso,
-  deleteTodo, deleteReminder, deleteNote, deleteList,
+  upsertReminder, upsertNote, tagItem, nowIso,
+  deleteReminder, deleteNote,
   listDiary, getDiaryByDate, upsertDiaryEntry,
   listPeople, getPerson, searchPeople, upsertPerson, deletePerson, createLink, deleteLink,
   ensureCustomField,
@@ -155,14 +155,10 @@ function rowWithLocalTimes<T extends Record<string, any>>(row: T): T {
   return out as T;
 }
 
-const WRITE_TABLES = { event: "events", reminder: "reminders", todo: "todos", note: "notes", person: "people" } as const;
+const WRITE_TABLES = { event: "events", reminder: "reminders", note: "notes", person: "people" } as const;
 
-/**
- * The item kinds a delete tool can target. `list` is included even though it is
- * not an `ItemType` (it cannot be tagged, linked, or shown as a card) because
- * `delete_list` is still a destructive tool and goes through the same gate.
- */
-export type DeleteType = ItemType | "list";
+/** The item kinds a delete tool can target. */
+export type DeleteType = ItemType;
 
 /**
  * A request for the user to approve a destructive delete.
@@ -175,7 +171,7 @@ export type DeleteType = ItemType | "list";
 export interface ConfirmDeleteRequest {
   type: DeleteType;
   id: string;
-  /** Human descriptor: title / summary / full_name / list name. */
+  /** Human descriptor: title / summary / full_name. */
   label: string;
   /** Optional secondary line, e.g. the calendar name for a connected event. */
   sub?: string;
@@ -228,27 +224,13 @@ async function getRowById(table: string, id: unknown): Promise<any | null> {
   // and make existence checks (tag/link/update/delete) report "not found" for
   // items that exist. Events go through calendars.ts, which also covers the
   // connected CalDAV calendars, not just the built-in one.
-  //
-  // `lists` has no GET-by-id endpoint, so its existence is resolved from the
-  // fetched list set — same source `listLists()` already uses everywhere else.
-  // Without this case `delete_list` could never find its target (it always
-  // errored "No list found"), and the confirmation gate would never reach it.
   switch (table) {
-    case "todos": return (await getTodo(id)) ?? null;
     case "reminders": return (await getReminder(id)) ?? null;
     case "people": return (await getPerson(id)) ?? null;
     case "notes": return (await getNote(id)) ?? null;
     case "events": return (await findEventById(id)) ?? null;
-    case "lists": return (await listLists()).find((l) => l.id === id) ?? null;
     default: return null;
   }
-}
-
-/** Resolve a list name to its id (case-insensitive); null if not found. */
-async function resolveListId(name: unknown): Promise<string | null> {
-  if (typeof name !== "string" || !name.trim()) return null;
-  const lists = await listLists();
-  return lists.find((l) => l.name.toLowerCase() === name.trim().toLowerCase())?.id ?? null;
 }
 
 /**
@@ -294,33 +276,8 @@ const TOOLS = [
     function: {
       name: "get_overview",
       description:
-        "Get a high-level overview of the user's data: counts of events/todos/reminders/notes, the names of all lists and tags, and the current date/time. Call this first when you need orientation.",
+        "Get a high-level overview of the user's data: counts of events/reminders/notes, the names of all tags, and the current date/time. Call this first when you need orientation.",
       parameters: { type: "object", properties: {} },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "search_todos",
-      description: "Search to-do tasks with optional filters. Returns compact records including ids.",
-      parameters: {
-        type: "object",
-        properties: {
-          query: {
-            type: "string",
-            description:
-              "Distinctive keywords to match in the title or notes — not the user's whole phrase. Every word must " +
-              "match, so extra words the user added shrink the results.",
-          },
-          list: { type: "string", description: "List name to filter by (e.g. 'Work')." },
-          status: { type: "string", enum: ["all", "active", "completed"], description: "Default 'active'." },
-          min_priority: { type: "integer", description: "0 none, 1 low, 2 medium, 3 high." },
-          due_before: { type: "string", description: "ISO date/datetime; only tasks due before this." },
-          due_after: { type: "string", description: "ISO date/datetime; only tasks due after this." },
-          tag: { type: "string", description: "Tag name (without #)." },
-          limit: { type: "integer", description: `Max results (default ${DEFAULT_LIMIT}, max ${MAX_LIMIT}).` },
-        },
-      },
     },
   },
   {
@@ -461,7 +418,7 @@ const TOOLS = [
       parameters: {
         type: "object",
         properties: {
-          type: { type: "string", enum: ["event", "reminder", "todo", "note", "person"] },
+          type: { type: "string", enum: ["event", "reminder", "note", "person"] },
           id: { type: "string" },
           calendar_id: { type: "string", description: "For events: the calendar_id returned by search_events." },
         },
@@ -511,7 +468,7 @@ const TOOLS = [
             items: {
               type: "object",
               properties: {
-                type: { type: "string", enum: ["event", "reminder", "todo", "note", "diary", "person"] },
+                type: { type: "string", enum: ["event", "reminder", "note", "diary", "person"] },
                 id: { type: "string", description: "The item's id, from a search tool. For a diary entry, the `id` from search_diary or get_diary_entry." },
                 calendar_id: { type: "string", description: "For events: the calendar_id returned by search_events." },
                 occurrence_start: {
@@ -533,45 +490,6 @@ const TOOLS = [
   },
 
   // ---- Write tools (create / update). No delete tools by design. ----
-  {
-    type: "function",
-    function: {
-      name: "create_todo",
-      description: "Create a new to-do task. Confirm ambiguous details with the user before creating.",
-      parameters: {
-        type: "object",
-        properties: {
-          title: { type: "string" },
-          list: { type: "string", description: "List name; falls back to the first list if unknown." },
-          notes: { type: "string" },
-          due_at: { type: "string", description: "ISO date/datetime." },
-          priority: { type: "integer", description: "0 none, 1 low, 2 medium, 3 high." },
-          parent_todo_id: { type: "string", description: "Make this a subtask of the given to-do id." },
-        },
-        required: ["title"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "update_todo",
-      description: "Update fields of an existing to-do by id. Only include the fields you want to change. Use completed to mark done/undone.",
-      parameters: {
-        type: "object",
-        properties: {
-          id: { type: "string" },
-          title: { type: "string" },
-          list: { type: "string" },
-          notes: { type: "string" },
-          due_at: { type: "string", description: "ISO date/datetime, or null to clear." },
-          priority: { type: "integer" },
-          completed: { type: "boolean" },
-        },
-        required: ["id"],
-      },
-    },
-  },
   {
     type: "function",
     function: {
@@ -726,21 +644,6 @@ const TOOLS = [
   {
     type: "function",
     function: {
-      name: "create_list",
-      description: "Create a new to-do list. List names must be unique (case-insensitive) — if a name is taken this returns an error; prefer updating the existing list instead of creating a duplicate.",
-      parameters: {
-        type: "object",
-        properties: {
-          name: { type: "string" },
-          color: { type: "string", description: "Hex color, e.g. #3b82f6." },
-        },
-        required: ["name"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
       name: "create_person",
       description:
         "Create a new contact (person). Multi-value fields are arrays. custom_fields are user-defined label/value pairs (e.g. {label:'Eye color', value:'Blue'}). Confirm ambiguous details first.",
@@ -803,7 +706,7 @@ const TOOLS = [
       parameters: {
         type: "object",
         properties: {
-          type: { type: "string", enum: ["event", "reminder", "todo", "note", "person"] },
+          type: { type: "string", enum: ["event", "reminder", "note", "person"] },
           id: { type: "string" },
           tag: { type: "string", description: "Tag name without the leading #." },
         },
@@ -816,13 +719,13 @@ const TOOLS = [
     function: {
       name: "link_items",
       description:
-        "Connect any two items with a cross-link (e.g. attach a person to an event, or a note to a to-do). Works both directions. Look up both ids first.",
+        "Connect any two items with a cross-link (e.g. attach a person to an event, or a note to a reminder). Works both directions. Look up both ids first.",
       parameters: {
         type: "object",
         properties: {
-          source_type: { type: "string", enum: ["event", "reminder", "todo", "note", "person"] },
+          source_type: { type: "string", enum: ["event", "reminder", "note", "person"] },
           source_id: { type: "string" },
-          target_type: { type: "string", enum: ["event", "reminder", "todo", "note", "person"] },
+          target_type: { type: "string", enum: ["event", "reminder", "note", "person"] },
           target_id: { type: "string" },
         },
         required: ["source_type", "source_id", "target_type", "target_id"],
@@ -837,9 +740,9 @@ const TOOLS = [
       parameters: {
         type: "object",
         properties: {
-          source_type: { type: "string", enum: ["event", "reminder", "todo", "note", "person"] },
+          source_type: { type: "string", enum: ["event", "reminder", "note", "person"] },
           source_id: { type: "string" },
-          target_type: { type: "string", enum: ["event", "reminder", "todo", "note", "person"] },
+          target_type: { type: "string", enum: ["event", "reminder", "note", "person"] },
           target_id: { type: "string" },
         },
         required: ["source_type", "source_id", "target_type", "target_id"],
@@ -850,14 +753,6 @@ const TOOLS = [
   // ---- Delete tools. Destructive & irreversible. Each shows the user a
   // ---- confirmation card carrying the real item; the delete only runs if they
   // ---- click Delete. The model cannot bypass this — it is enforced in code.
-  {
-    type: "function",
-    function: {
-      name: "delete_todo",
-      description: "Permanently delete a to-do (and its subtasks) by id. The user must approve a confirmation card before it runs; you don't need to ask separately. Look up the item first so the card shows the right one.",
-      parameters: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
-    },
-  },
   {
     type: "function",
     function: {
@@ -897,14 +792,6 @@ const TOOLS = [
       parameters: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
     },
   },
-  {
-    type: "function",
-    function: {
-      name: "delete_list",
-      description: "Delete a to-do list by id; its tasks are moved to another list (not deleted). Cannot delete the only remaining list. The user must approve a confirmation card before it runs; you don't need to ask separately.",
-      parameters: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
-    },
-  },
 ] as const;
 
 /**
@@ -928,7 +815,7 @@ const WEB_SEARCH_TOOL = [
         "MONEY PER CALL, so it is a last resort, not a habit. Use it ONLY when the answer is a current, " +
         "real-world fact you cannot know and the user's own data cannot contain: today's news, a live price or " +
         "score, whether a business is open now, a recent release or event. Do NOT use it for anything about the " +
-        "user's own events, to-dos, reminders, notes or people — search those with the other tools. Do NOT use " +
+        "user's own events, reminders, notes or people — search those with the other tools. Do NOT use " +
         "it for the weather (get_weather), for stable general knowledge you already know, for arithmetic or " +
         "dates, or to double-check yourself. If you can answer without it, do. Ask ONE well-formed question per " +
         "call and prefer a single call.",
@@ -1032,8 +919,8 @@ async function toolGetOverview() {
   // Every domain is remote now (M2–M4); count from the fetched lists. The
   // built-in calendar's event count only — connected CalDAV events are a live
   // windowed fetch, not a stored total.
-  const [lists, tags, todos, reminders, people, events, notes] = await Promise.all([
-    listLists(), listTags(), listTodos(), listReminders(), listPeople(), listEvents(), listNotes(),
+  const [tags, reminders, people, events, notes] = await Promise.all([
+    listTags(), listReminders(), listPeople(), listEvents(), listNotes(),
   ]);
   return {
     now: toLocalIso(new Date().toISOString()),
@@ -1042,81 +929,12 @@ async function toolGetOverview() {
       // Built-in calendar only; connected CalDAV events aren't counted (they're
       // a live windowed fetch, not a stored total).
       events: events.length,
-      todos: todos.length,
-      todos_active: todos.filter((t) => t.completed === 0).length,
       reminders: reminders.length,
       reminders_active: reminders.filter((r) => r.completed === 0).length,
       notes: notes.length,
       people: people.length,
     },
-    lists: lists.map((l) => l.name),
     tags: tags.map((t) => t.name),
-  };
-}
-
-async function toolSearchTodos(args: Record<string, unknown>) {
-  // Todos are remote (M2). Rather than push these filters into the API — which
-  // would mean designing the full query surface before it is needed — the small
-  // single-user todo set is fetched once and filtered here. The ranking still
-  // runs through the shared matchQuery, so results agree with every other
-  // search path. Tags are still local (until M3), so idsForTag stays a local
-  // lookup.
-  const [allTodos, lists] = await Promise.all([listTodos(), listLists()]);
-  const listName = (id: string | null) => (id ? lists.find((l) => l.id === id)?.name ?? null : null);
-  let rows: any[] = allTodos.map((t) => ({ ...t, list_name: listName(t.list_id) }));
-
-  const status = (args.status as string) ?? "active";
-  if (status === "active") rows = rows.filter((r) => r.completed === 0);
-  else if (status === "completed") rows = rows.filter((r) => r.completed === 1);
-
-  const queryTermList = typeof args.query === "string" ? queryTerms(args.query.trim()) : [];
-  if (queryTermList.length > 0) {
-    // Prefilter to rows hitting ANY term; matchQuery below decides strict vs
-    // ranked-partial, exactly as the SQL prefilter used to.
-    const lowered = queryTermList.map((t) => t.toLowerCase());
-    rows = rows.filter((r) => {
-      const hay = `${r.title ?? ""} ${r.notes ?? ""}`.toLowerCase();
-      return lowered.some((t) => hay.includes(t));
-    });
-  }
-  if (typeof args.list === "string" && args.list.trim()) {
-    rows = rows.filter((r) => r.list_name === args.list);
-  }
-  if (typeof args.min_priority === "number") {
-    rows = rows.filter((r) => r.priority >= (args.min_priority as number));
-  }
-  const dueBefore = parseDate(args.due_before, true);
-  if (dueBefore) rows = rows.filter((r) => r.due_at && r.due_at <= dueBefore.toISOString());
-  const dueAfter = parseDate(args.due_after);
-  if (dueAfter) rows = rows.filter((r) => r.due_at && r.due_at >= dueAfter.toISOString());
-
-  if (typeof args.tag === "string" && args.tag.trim()) {
-    const tagIds = await idsForTag("todo", args.tag.trim());
-    rows = rows.filter((r) => tagIds.has(r.id));
-  }
-
-  // Order: incomplete first, then by due date with nulls last — the same order
-  // the SQL used to produce.
-  rows.sort((a, b) =>
-    a.completed - b.completed ||
-    (a.due_at ? 0 : 1) - (b.due_at ? 0 : 1) ||
-    String(a.due_at).localeCompare(String(b.due_at)),
-  );
-
-  const m = queryTermList.length > 0
-    ? matchQuery(rows, args.query as string, (t) => [t.title, t.notes])
-    : { rows, partial: false };
-  const filtered = m.rows;
-  const limit = clampLimit(args.limit);
-  return {
-    total: filtered.length,
-    truncated: filtered.length > limit,
-    partial_match: m.partial ? PARTIAL_MATCH_NOTE : undefined,
-    results: filtered.slice(0, limit).map((t) => ({
-      id: t.id, title: t.title, list: t.list_name, completed: !!t.completed,
-      due_at: toLocalIso(t.due_at), priority: PRIORITY[t.priority] ?? t.priority,
-      is_subtask: !!t.parent_todo_id, notes: t.notes || undefined,
-    })),
   };
 }
 
@@ -1206,8 +1024,8 @@ async function resolveEvent(args: Record<string, unknown>) {
 }
 
 async function toolSearchReminders(args: Record<string, unknown>) {
-  // Reminders are remote (M3): fetch the list and filter in JS, mirroring
-  // toolSearchTodos. Tags stay local until M3d.
+  // Reminders are remote (M3): fetch the list and filter in JS. Tags stay
+  // local until M3d.
   let rows: any[] = await listReminders();
 
   const status = (args.status as string) ?? "active";
@@ -1394,10 +1212,10 @@ async function toolGetItem(args: Record<string, unknown>) {
   // space-scoped endpoint the UI uses, so the assistant cannot reach a row the
   // signed-in user couldn't.
   const getters: Record<string, (id: string) => Promise<Record<string, any> | undefined>> = {
-    event: getEvent, reminder: getReminder, todo: getTodo, note: getNote, person: getPerson,
+    event: getEvent, reminder: getReminder, note: getNote, person: getPerson,
   };
   const getter = getters[type];
-  if (!getter || !id) return { error: "Provide a valid type (event|reminder|todo|note|person) and id." };
+  if (!getter || !id) return { error: "Provide a valid type (event|reminder|note|person) and id." };
 
   const item = await getter(id);
 
@@ -1747,43 +1565,6 @@ async function toolShowItems(
 // Tool executors (write: create / update). No delete tools by design; all
 // changes are reversible by the user in the UI.
 // ---------------------------------------------------------------------------
-async function toolCreateTodo(args: Record<string, unknown>) {
-  if (typeof args.title !== "string" || !args.title.trim()) return { error: "title is required." };
-  const lists = await listLists();
-  const listId = (await resolveListId(args.list)) ?? lists[0]?.id ?? null;
-  const id = await upsertTodo({
-    title: args.title.trim(),
-    notes: typeof args.notes === "string" ? args.notes : null,
-    list_id: listId,
-    due_at: asIso(args.due_at),
-    priority: asPriority(args.priority),
-    completed: 0, completed_at: null,
-    parent_todo_id: typeof args.parent_todo_id === "string" ? args.parent_todo_id : null,
-    position: null,
-  });
-  return { ok: true, id, list: lists.find((l) => l.id === listId)?.name };
-}
-
-async function toolUpdateTodo(args: Record<string, unknown>) {
-  const t = await getRowById("todos", args.id);
-  if (!t) return { error: `No todo found with id ${args.id}.` };
-  const listId = "list" in args ? (await resolveListId(args.list)) ?? t.list_id : t.list_id;
-  const completed = "completed" in args ? (args.completed ? 1 : 0) : t.completed;
-  await upsertTodo({
-    id: t.id,
-    title: "title" in args ? String(args.title) : t.title,
-    notes: "notes" in args ? (args.notes as string | null) : t.notes,
-    list_id: listId,
-    due_at: "due_at" in args ? asIso(args.due_at) : t.due_at,
-    priority: "priority" in args ? asPriority(args.priority) : t.priority,
-    completed,
-    completed_at: completed ? (t.completed_at ?? nowIso()) : null,
-    parent_todo_id: t.parent_todo_id,
-    position: t.position,
-  });
-  return { ok: true, id: t.id };
-}
-
 async function toolCreateEvent(args: Record<string, unknown>) {
   if (typeof args.summary !== "string" || !args.summary.trim()) return { error: "summary is required." };
   const dtstart = asIso(args.start);
@@ -1876,7 +1657,7 @@ async function toolCreateReminder(args: Record<string, unknown>) {
     remind_at: asIso(args.remind_at),
     rrule: typeof args.rrule === "string" ? args.rrule : null,
     priority: asPriority(args.priority),
-    completed: 0, completed_at: null, linked_todo_id: null,
+    completed: 0, completed_at: null,
   });
   return { ok: true, id };
 }
@@ -1895,7 +1676,6 @@ async function toolUpdateReminder(args: Record<string, unknown>) {
     priority: "priority" in args ? asPriority(args.priority) : r.priority,
     completed,
     completed_at: completed ? (r.completed_at ?? nowIso()) : null,
-    linked_todo_id: r.linked_todo_id,
   });
   return { ok: true, id: r.id };
 }
@@ -1974,19 +1754,6 @@ async function toolDeleteDiaryEntry(args: Record<string, unknown>, ctx: ToolCont
   if (!(await confirmBeforeDelete(ctx, "note", entry.id, `Diary — ${date}`))) return DENIED;
   await deleteNote(entry.id);
   return { ok: true, deleted: { type: "diary", id: entry.id, date } };
-}
-
-async function toolCreateList(args: Record<string, unknown>) {
-  if (typeof args.name !== "string" || !args.name.trim()) return { error: "name is required." };
-  try {
-    const id = await upsertList({ name: args.name.trim(), color: typeof args.color === "string" ? args.color : null });
-    return { ok: true, id };
-  } catch (e) {
-    // Most likely: a list with this name already exists (lists.name is unique,
-    // case-insensitive). Surface the message so the model can update the
-    // existing list instead of retrying the create.
-    return { error: e instanceof Error ? e.message : String(e) };
-  }
 }
 
 async function toolAddTag(args: Record<string, unknown>) {
@@ -2079,7 +1846,7 @@ async function toolUpdatePerson(args: Record<string, unknown>) {
   return { ok: true, id: p.id };
 }
 
-const LINK_TYPES = ["event", "reminder", "todo", "note", "person"];
+const LINK_TYPES = ["event", "reminder", "note", "person"];
 
 /** Validate a link request and confirm both endpoints exist. */
 async function resolveLinkPair(args: Record<string, unknown>) {
@@ -2088,7 +1855,7 @@ async function resolveLinkPair(args: Record<string, unknown>) {
   const tt = args.target_type as string;
   const ti = args.target_id as string;
   if (!LINK_TYPES.includes(st) || !LINK_TYPES.includes(tt) || typeof si !== "string" || typeof ti !== "string") {
-    return { error: "Provide source_type, source_id, target_type, target_id (types: event|reminder|todo|note|person)." as const };
+    return { error: "Provide source_type, source_id, target_type, target_id (types: event|reminder|note|person)." as const };
   }
   const s = await getRowById(WRITE_TABLES[st as ItemType], si);
   if (!s) return { error: `No ${st} found with id ${si}.` as const };
@@ -2137,13 +1904,6 @@ const DENIED = {
     "acknowledge that they cancelled and ask how they'd like to proceed.",
 };
 
-async function toolDeleteTodo(args: Record<string, unknown>, ctx: ToolContext) {
-  const t = await getRowById("todos", args.id);
-  if (!t) return { error: `No todo found with id ${args.id}.` };
-  if (!(await confirmBeforeDelete(ctx, "todo", t.id, t.title ?? ""))) return DENIED;
-  await deleteTodo(t.id);
-  return { ok: true, deleted: { type: "todo", id: t.id, title: t.title } };
-}
 async function toolDeleteEvent(args: Record<string, unknown>, ctx: ToolContext) {
   const ev = await resolveEvent(args);
   if (!ev) return { error: `No event found with id ${args.id}.` };
@@ -2183,15 +1943,6 @@ async function toolDeletePerson(args: Record<string, unknown>, ctx: ToolContext)
   await deletePerson(p.id);
   return { ok: true, deleted: { type: "person", id: p.id, full_name: p.full_name } };
 }
-async function toolDeleteList(args: Record<string, unknown>, ctx: ToolContext) {
-  const l = await getRowById("lists", args.id);
-  if (!l) return { error: `No list found with id ${args.id}.` };
-  const lists = await listLists();
-  if (lists.length <= 1) return { error: "Can't delete the only remaining list." };
-  if (!(await confirmBeforeDelete(ctx, "list", l.id, l.name))) return DENIED;
-  await deleteList(l.id);
-  return { ok: true, deleted: { type: "list", id: l.id, name: l.name }, note: "Its tasks were moved to another list." };
-}
 
 /**
  * Ask the user to approve a destructive delete.
@@ -2227,7 +1978,6 @@ async function executeTool(
   switch (name) {
     // read
     case "get_overview": return toolGetOverview();
-    case "search_todos": return toolSearchTodos(args);
     case "search_events": return toolSearchEvents(args);
     case "list_calendars": return toolListCalendars();
     case "search_reminders": return toolSearchReminders(args);
@@ -2244,8 +1994,6 @@ async function executeTool(
     // presentation
     case "show_items": return toolShowItems(args, emitItems);
     // write
-    case "create_todo": return toolCreateTodo(args);
-    case "update_todo": return toolUpdateTodo(args);
     case "create_event": return toolCreateEvent(args);
     case "update_event": return toolUpdateEvent(args);
     case "create_reminder": return toolCreateReminder(args);
@@ -2253,20 +2001,17 @@ async function executeTool(
     case "create_note": return toolCreateNote(args);
     case "update_note": return toolUpdateNote(args);
     case "write_diary_entry": return toolWriteDiaryEntry(args);
-    case "create_list": return toolCreateList(args);
     case "create_person": return toolCreatePerson(args);
     case "update_person": return toolUpdatePerson(args);
     case "add_tag": return toolAddTag(args);
     case "link_items": return toolLinkItems(args);
     case "unlink_items": return toolUnlinkItems(args);
     // delete — each goes through confirmBeforeDelete(ctx, …) before touching data
-    case "delete_todo": return toolDeleteTodo(args, ctx);
     case "delete_event": return toolDeleteEvent(args, ctx);
     case "delete_reminder": return toolDeleteReminder(args, ctx);
     case "delete_note": return toolDeleteNote(args, ctx);
     case "delete_diary_entry": return toolDeleteDiaryEntry(args, ctx);
     case "delete_person": return toolDeletePerson(args, ctx);
-    case "delete_list": return toolDeleteList(args, ctx);
     default: return { error: `Unknown tool: ${name}` };
   }
 }
@@ -2275,7 +2020,6 @@ async function executeTool(
 function statusFor(name: string, args: Record<string, unknown>): string {
   switch (name) {
     case "get_overview": return i18next.t("status.overview");
-    case "search_todos": return i18next.t("status.searchTodos");
     case "search_events": return i18next.t("status.searchEvents");
     case "list_calendars": return i18next.t("status.listCalendars");
     case "search_reminders": return i18next.t("status.searchReminders");
@@ -2297,8 +2041,6 @@ function statusFor(name: string, args: Record<string, unknown>): string {
     }
     case "get_message": return i18next.t("status.getMessage");
     case "show_items": return i18next.t("status.showItems");
-    case "create_todo": return i18next.t("status.createTodo");
-    case "update_todo": return i18next.t("status.updateTodo");
     case "create_event": return i18next.t("status.createEvent");
     case "update_event": return i18next.t("status.updateEvent");
     case "create_reminder": return i18next.t("status.createReminder");
@@ -2306,34 +2048,31 @@ function statusFor(name: string, args: Record<string, unknown>): string {
     case "create_note": return i18next.t("status.createNote");
     case "update_note": return i18next.t("status.updateNote");
     case "write_diary_entry": return i18next.t("status.writeDiaryEntry");
-    case "create_list": return i18next.t("status.createList");
     case "create_person": return i18next.t("status.createPerson");
     case "update_person": return i18next.t("status.updatePerson");
     case "add_tag": return i18next.t("status.addTag");
     case "link_items": return i18next.t("status.linkItems");
     case "unlink_items": return i18next.t("status.unlinkItems");
-    case "delete_todo": return i18next.t("status.deleteTodo");
     case "delete_event": return i18next.t("status.deleteEvent");
     case "delete_reminder": return i18next.t("status.deleteReminder");
     case "delete_note": return i18next.t("status.deleteNote");
     case "delete_diary_entry": return i18next.t("status.deleteDiaryEntry");
     case "delete_person": return i18next.t("status.deletePerson");
-    case "delete_list": return i18next.t("status.deleteList");
     default: return i18next.t("status.working");
   }
 }
 
 const SYSTEM_PROMPT =
   "You are a helpful personal assistant embedded in a local life-management app called Sekunda. " +
-  "You help the user with THEIR data — calendar events, reminders, to-dos, notes, a dated diary (journal), people (contacts), lists, and tags.\n\n" +
+  "You help the user with THEIR data — calendar events, reminders, notes, a dated diary (journal), people (contacts), and tags.\n\n" +
   "You can READ, WRITE, and DELETE data:\n" +
-  "- Read/lookup tools: get_overview, search_todos, search_events, list_calendars, search_reminders, search_notes, search_diary, get_diary_entry, search_people, get_item, get_weather.\n" +
-  "- Create/update tools: create_todo, update_todo, create_event, update_event, create_reminder, " +
-  "update_reminder, create_note, update_note, write_diary_entry, create_list, create_person, update_person, add_tag.\n" +
+  "- Read/lookup tools: get_overview, search_events, list_calendars, search_reminders, search_notes, search_diary, get_diary_entry, search_people, get_item, get_weather.\n" +
+  "- Create/update tools: create_event, update_event, create_reminder, " +
+  "update_reminder, create_note, update_note, write_diary_entry, create_person, update_person, add_tag.\n" +
   "- Linking tools: link_items / unlink_items connect any two items (e.g. attach a person to an event, " +
-  "or a note to a to-do). People are contacts with emails/phones/addresses, a birthday, and user-defined " +
+  "or a note to a reminder). People are contacts with emails/phones/addresses, a birthday, and user-defined " +
   "custom_fields (label/value, e.g. 'Eye color: Blue').\n" +
-  "- Delete tools: delete_todo, delete_event, delete_reminder, delete_note, delete_diary_entry, delete_person, delete_list.\n" +
+  "- Delete tools: delete_event, delete_reminder, delete_note, delete_diary_entry, delete_person.\n" +
   "- The DIARY is a private journal keyed by day (one entry per date), separate from notes. Use the diary tools " +
   "for journaling ('what did I do last weekend', 'add to today's diary'); use write_diary_entry with a YYYY-MM-DD " +
   "date (default today). Diary entries can be shown as cards with show_items (type \"diary\", the id from a diary " +
@@ -2378,7 +2117,7 @@ const SYSTEM_PROMPT =
   "than dumping the schedule you used to work it out.\n\n" +
   "Guidelines:\n" +
   "- ALWAYS look before answering. When the user asks anything about their own data — schedule, reminders, " +
-  "to-dos, notes, contacts, \"when/what/where/do I have…\", \"when should I…\" — search for it yourself in the " +
+  "notes, contacts, \"when/what/where/do I have…\", \"when should I…\" — search for it yourself in the " +
   "same turn, THEN answer. Never say you don't have the information, and never ask permission to look (\"Would " +
   "you like me to check?\") — just check. Only state that something doesn't exist after a search has actually " +
   "come back empty. A question that sounds like it could be general knowledge (\"when should I take my " +
@@ -2392,11 +2131,11 @@ const SYSTEM_PROMPT =
   "existing item, find its id with a search tool before calling the write/delete tool. To add one entry to a " +
   "person's array field (email/phone/custom field), fetch them with get_item first, then send the full merged list " +
   "to update_person.\n" +
-  "- Prefer specific, filtered queries (by date range, list, tag, or keyword). If a tool reports `truncated: true`, " +
+  "- Prefer specific, filtered queries (by date range, tag, or keyword). If a tool reports `truncated: true`, " +
   "narrow your filters rather than assuming you've seen everything; if you still report a partial answer, say so " +
   "in passing (\"there are more, but the next few are…\").\n" +
   "- Before creating or updating, make sure the request is clear. If key details are ambiguous (which item, what " +
-  "date/time, which list), ask a brief clarifying question instead of guessing. For clearly-specified requests, just " +
+  "date/time), ask a brief clarifying question instead of guessing. For clearly-specified requests, just " +
   "do it.\n" +
   "- DELETION IS PERMANENT AND CANNOT BE UNDONE. Every delete tool shows the user a confirmation card with the exact " +
   "item, and ONLY runs if they click Delete — this is enforced for you, so you do not need to ask for separate " +
@@ -2422,7 +2161,7 @@ const WEB_SEARCH_PROMPT =
   "- You have web_search, but treat it as a last resort: it is slow and each call costs the user money.\n" +
   "- Search ONLY for current real-world facts that cannot be in the user's data and that you cannot reliably " +
   "know: today's news, live prices or scores, opening hours, recent releases or results.\n" +
-  "- Never search for the user's own events, to-dos, reminders, notes or people; never for the weather " +
+  "- Never search for the user's own events, reminders, notes or people; never for the weather " +
   "(get_weather covers it); never for stable general knowledge, arithmetic or dates; never merely to " +
   "double-check something you already know.\n" +
   `- At most ${MAX_WEB_SEARCHES} searches per turn. Prefer one.\n` +
@@ -2823,8 +2562,6 @@ export interface DaySummaryInput {
   events: { title: string; start: string; all_day: boolean; location?: string | null }[];
   /** Reminders due on the day (or still open from before). */
   reminders: { title: string; due: string | null; overdue: boolean }[];
-  /** To-dos due on the day (or overdue), highest priority first. */
-  todos: { title: string; due: string | null; priority: string; overdue: boolean }[];
   /** Birthdays today and soon. `age` is the age they turn, computed in TS. */
   birthdays: { name: string; date: string; in_days: number; age: number | null }[];
   /**
@@ -2859,7 +2596,7 @@ export function hasDayContent(input: DaySummaryInput): boolean {
   // vanish outright — the setup prompt it replaced had more presence than that.
   return (
     input.events.length > 0 || input.reminders.length > 0 ||
-    input.todos.length > 0 || input.birthdays.length > 0 || !!input.weather
+    input.birthdays.length > 0 || !!input.weather
   );
 }
 
@@ -2882,11 +2619,6 @@ function dayDigest(input: DaySummaryInput): string {
   if (input.reminders.length) {
     parts.push("REMINDERS:\n" + input.reminders.map((r) =>
       `- ${r.title} at ${digestTime(r.due)}${r.overdue ? " [OVERDUE]" : ""}`).join("\n"));
-  }
-  if (input.todos.length) {
-    parts.push("TO-DOS:\n" + input.todos.map((t) =>
-      `- ${t.title} (priority ${t.priority})${t.due ? `, due ${digestTime(t.due)}` : ""}` +
-      `${t.overdue ? " [OVERDUE]" : ""}`).join("\n"));
   }
   if (input.birthdays.length) {
     parts.push("BIRTHDAYS:\n" + input.birthdays.map((b) => {
@@ -2921,10 +2653,10 @@ const DAY_SUMMARY_PROMPT =
   "- NEVER use bullet points, lists, headings, tables or bold labels. Prose only.\n" +
   "- Lead with the shape of the day, then what matters most: what's first, what clashes, what's overdue, " +
   "whose birthday it is. Don't recite every item — the tiles below already list them.\n" +
-  "- If there are no events, to-dos, reminders or birthdays, the day is a quiet one: say so in a line, " +
+  "- If there are no events, reminders or birthdays, the day is a quiet one: say so in a line, " +
   "and if weather is given treat it as the day's main thing rather than the usual 'mention only if it " +
   "matters' rule — a calm forecast is worth a sentence when there is nothing else on.\n" +
-  "- Keep times and numbers as readable digits (9:30am, 3 to-dos), never spelled out as words.\n" +
+  "- Keep times and numbers as readable digits (9:30am, 3 reminders), never spelled out as words.\n" +
   "- If weather is given, mention it ONLY when it would change what they do — rain or snow, a storm, a " +
   "notably hot or cold day, poor air quality (US AQI over 100), or plans that look outdoor. Prefer the " +
   "feels-like temperature to the air temperature when they differ much, since that's what going outside " +
