@@ -562,6 +562,7 @@
     "refresh": "Refresh",
     "readOnly": "Read-only",
     "empty": "Nothing in this mailbox.",
+    "loadingMailbox": "Mailbox loading…",
     "noMatches": "No messages match.",
     "noBody": "This message has no text.",
     "selectPrompt": "Pick a message to read it.",

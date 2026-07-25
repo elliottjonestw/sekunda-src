@@ -84,6 +84,30 @@ function ToolbarButton({
   );
 }
 
+/**
+ * The list's "still loading this mailbox" row.
+ *
+ * Held back briefly — like `ViewGate`'s `ViewLoading` — so switching to a
+ * mailbox already in the cache resolves before the spinner ever paints, and
+ * only a real network wait shows it. This is what a switch shows *instead* of
+ * "Nothing in this mailbox.", which would otherwise read as an answer before
+ * the question has been asked.
+ */
+function MailboxLoading() {
+  const { t } = useTranslation();
+  const [show, setShow] = useState(false);
+  useEffect(() => {
+    const id = setTimeout(() => setShow(true), 150);
+    return () => clearTimeout(id);
+  }, []);
+  if (!show) return null;
+  return (
+    <p className="flex items-center gap-2 p-4 text-sm text-neutral-400" role="status" aria-live="polite">
+      <Loader2 size={15} className="animate-spin" /> {t("mail.loadingMailbox")}
+    </p>
+  );
+}
+
 export default function MailView({ target }: { target?: MailMessageSummary }) {
   const { t } = useTranslation();
   const account = getMailSettings().account;
@@ -96,6 +120,11 @@ export default function MailView({ target }: { target?: MailMessageSummary }) {
   const [total, setTotal] = useState(0);
   const [truncated, setTruncated] = useState(false);
   const [error, setError] = useState("");
+  // A list-level load flag, separate from the first-load gate (which only blocks
+  // the very first arrival on the page). Every later `load` — a mailbox switch,
+  // a filter change — sets it, so an empty list can tell "still loading" from
+  // "genuinely nothing here" instead of showing the empty text over both.
+  const [loading, setLoading] = useState(false);
   // The uid list is a SNAPSHOT, taken once per search and paged over. That is
   // what makes paging safe against mail arriving mid-session, and it is a
   // property of uids rather than luck: uids ascend with arrival, so a new
@@ -139,6 +168,7 @@ export default function MailView({ target }: { target?: MailMessageSummary }) {
   const load = async (refresh = false) => {
     if (!account) return;
     setError("");
+    setLoading(true);
     try {
       const found = await searchMail(account, {
         mailbox, query: query || undefined, unseen: unreadOnly, limit: PAGE_SIZE, refresh,
@@ -161,6 +191,8 @@ export default function MailView({ target }: { target?: MailMessageSummary }) {
       setUids([]);
       setTotal(0);
       status.current = null;
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -493,7 +525,16 @@ export default function MailView({ target }: { target?: MailMessageSummary }) {
           <div className="flex items-center gap-2">
             <select
               value={mailbox}
-              onChange={(e) => { setMailbox(e.target.value); setSelected(null); setDetail(null); }}
+              onChange={(e) => {
+                // Clear the list on a mailbox switch so the loading state shows
+                // instead of the previous folder's mail (or, worse, its empty
+                // text read as this folder's). A filter change keeps its list —
+                // the debounce means it is about to be replaced, not emptied.
+                setMailbox(e.target.value);
+                setSelected(null); setDetail(null);
+                setMessages([]); setUids([]); setTotal(0);
+                setLoading(true);
+              }}
               className="min-w-0 flex-1 rounded-lg border border-neutral-200 px-2 py-1.5 text-sm outline-none focus:border-blue-400 dark:border-neutral-600 dark:bg-neutral-800"
             >
               {/* `label` is the decoded name; `value` stays exactly what the
@@ -531,7 +572,11 @@ export default function MailView({ target }: { target?: MailMessageSummary }) {
           {error && (
             <p className="m-3 rounded-lg bg-red-50 p-3 text-sm leading-relaxed text-red-600 dark:bg-red-950/40">{error}</p>
           )}
-          {!error && messages.length === 0 && (
+          {/* Loading beats empty: a mailbox mid-load has no answer yet, so the
+              "nothing here" text would be a wrong one. Only once the load has
+              settled with zero results is the list genuinely empty. */}
+          {!error && messages.length === 0 && loading && <MailboxLoading />}
+          {!error && messages.length === 0 && !loading && (
             <p className="p-4 text-sm text-neutral-400">{query || unreadOnly ? t("mail.noMatches") : t("mail.empty")}</p>
           )}
           {messages.map((m) => (
