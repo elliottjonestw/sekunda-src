@@ -95,9 +95,16 @@ function ToolbarButton({
   );
 }
 
-/** Above this many, the link list arrives collapsed. A sign-in mail has one or
- *  two and wants them in sight; a newsletter has forty and doesn't. */
-const LINKS_SHOWN_UNCOLLAPSED = 6;
+/**
+ * Above this many, the link list arrives collapsed. A sign-in mail has one or
+ * two and wants them in sight; a newsletter has forty and doesn't.
+ *
+ * Deliberately low, because the list sits ABOVE the body: every row expanded by
+ * default is a row of the message pushed off the screen. Four covers the shape
+ * that motivated the feature — a verify button, a help link, an unsubscribe —
+ * without a receipt's worth of footer links burying the text.
+ */
+const LINKS_SHOWN_UNCOLLAPSED = 4;
 
 /**
  * Open a link out of a message — in the USER'S BROWSER, never in here.
@@ -186,14 +193,20 @@ function LinkRow({ link, index }: { link: MailLink; index: number }) {
  * Rows past the last marker had no anchor to mark: bare URLs spelled out in the
  * text, and links that lived only in an alternative part the body didn't
  * come from.
+ *
+ * Rendered ABOVE the body, sharing a frame with the attachments — a sign-in
+ * link is the reason the message was opened, and it should not be under it.
+ * That placement is what keeps `LINKS_SHOWN_UNCOLLAPSED` small.
  */
 function MessageLinks({ links }: { links: MailLink[] }) {
   const { t } = useTranslation();
   const [collapsed, setCollapsed] = useState(links.length > LINKS_SHOWN_UNCOLLAPSED);
   if (links.length === 0) return null;
 
+  // No border or margin of its own: it sits inside the shared carried-with-the
+  // message container, which owns the frame and the rule above it.
   return (
-    <section className="mt-6 rounded-xl border border-neutral-200 p-2 dark:border-neutral-700">
+    <div className="p-2">
       <button
         onClick={() => setCollapsed(!collapsed)}
         aria-expanded={!collapsed}
@@ -214,7 +227,7 @@ function MessageLinks({ links }: { links: MailLink[] }) {
           <p className="mt-2 px-2 pb-1 text-xs text-neutral-400">{t("mail.linksNote")}</p>
         </>
       )}
-    </section>
+    </div>
   );
 }
 
@@ -886,36 +899,56 @@ export default function MailView({ target }: { target?: MailMessageSummary }) {
 
             {detail && (
               <>
-                {detail.attachments.length > 0 && (
-                  <div className="mb-4 flex flex-wrap gap-2">
-                    {/* Buttons, but nothing is fetched until one is clicked —
-                        the size beside each name comes off BODYSTRUCTURE, so
-                        the choice is made with the real number in view rather
-                        than after ten megabytes have already moved. */}
-                    {detail.attachments.map((a, i) => {
-                      const id = `${a.part ?? i}`;
-                      const busy = downloading === id;
-                      const canSave = !!a.part && (a.size ?? 0) <= MAIL_MAX_ATTACHMENT_BYTES;
-                      return (
-                        <button
-                          key={id}
-                          onClick={() => void download(detail, a, id)}
-                          disabled={!canSave || busy}
-                          title={canSave ? t("mail.download") : t("mail.attachmentTooLarge")}
-                          className="flex items-center gap-1.5 rounded-lg bg-neutral-100 px-2.5 py-1 text-xs text-neutral-500 enabled:hover:bg-neutral-200 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-neutral-800 dark:text-neutral-400 dark:enabled:hover:bg-neutral-700"
-                        >
-                          {busy
-                            ? <Loader2 size={12} className="shrink-0 animate-spin" />
-                            : canSave
-                              ? <Download size={12} className="shrink-0" />
-                              : <Paperclip size={12} className="shrink-0" />}
-                          <span className="max-w-[16rem] truncate">{a.filename ?? a.content_type}</span>
-                          {a.size !== null && (
-                            <span className="text-neutral-400 dark:text-neutral-500">{fmtBytes(a.size)}</span>
-                          )}
-                        </button>
-                      );
-                    })}
+                {/* What the message CARRIES, above the message itself: what came
+                    attached to it, and where it points. Both are things you act
+                    on rather than read — a file you were sent, a sign-in link
+                    you opened the mail for — so burying them under the body
+                    means scrolling past the thing you came for. One framed
+                    block rather than two loose ones, with `divide-y` drawing the
+                    rule only when both halves are actually present. */}
+                {(detail.attachments.length > 0 || detail.links.length > 0) && (
+                  <div className="mb-5 divide-y divide-neutral-200 rounded-xl border border-neutral-200 dark:divide-neutral-700 dark:border-neutral-700">
+                    {detail.attachments.length > 0 && (
+                      <div className="space-y-1.5 p-2.5">
+                        {/* Buttons, but nothing is fetched until one is clicked
+                            — the size beside each name comes off BODYSTRUCTURE,
+                            so the choice is made with the real number in view
+                            rather than after ten megabytes have already moved. */}
+                        <div className="flex flex-wrap gap-2">
+                          {detail.attachments.map((a, i) => {
+                            const id = `${a.part ?? i}`;
+                            const busy = downloading === id;
+                            const canSave = !!a.part && (a.size ?? 0) <= MAIL_MAX_ATTACHMENT_BYTES;
+                            return (
+                              <button
+                                key={id}
+                                onClick={() => void download(detail, a, id)}
+                                disabled={!canSave || busy}
+                                title={canSave ? t("mail.download") : t("mail.attachmentTooLarge")}
+                                className="flex items-center gap-1.5 rounded-lg bg-neutral-100 px-2.5 py-1 text-xs text-neutral-500 enabled:hover:bg-neutral-200 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-neutral-800 dark:text-neutral-400 dark:enabled:hover:bg-neutral-700"
+                              >
+                                {busy
+                                  ? <Loader2 size={12} className="shrink-0 animate-spin" />
+                                  : canSave
+                                    ? <Download size={12} className="shrink-0" />
+                                    : <Paperclip size={12} className="shrink-0" />}
+                                <span className="max-w-[16rem] truncate">{a.filename ?? a.content_type}</span>
+                                {a.size !== null && (
+                                  <span className="text-neutral-400 dark:text-neutral-500">{fmtBytes(a.size)}</span>
+                                )}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        {/* Beside the chips now rather than at the foot of the
+                            message, where it was explaining a control that was
+                            a screen away. */}
+                        <p className="px-0.5 text-xs text-neutral-400">{t("mail.attachmentsHint")}</p>
+                      </div>
+                    )}
+                    {/* Keyed on the message so the toggle starts closed on each
+                        one rather than carrying the last message's state. */}
+                    <MessageLinks key={`links|${detail.mailbox}|${detail.uid}`} links={detail.links} />
                   </div>
                 )}
                 {downloadError && (
@@ -923,19 +956,9 @@ export default function MailView({ target }: { target?: MailMessageSummary }) {
                     {downloadError}
                   </p>
                 )}
-                {/* Keyed on the message so the quoted-text and link toggles
-                    start closed on every message, rather than carrying the last
-                    one's state across. */}
                 <MessageBody key={`body|${detail.mailbox}|${detail.uid}`} body={detail.body} />
                 {detail.body_truncated && (
                   <p className="mt-4 text-xs text-neutral-400">{t("mail.truncated")}</p>
-                )}
-                {/* Below the body, because it is a reading aid for it — and
-                    still listed when the body was cut, since the links were
-                    harvested from the full text before the cap. */}
-                <MessageLinks key={`links|${detail.mailbox}|${detail.uid}`} links={detail.links} />
-                {detail.attachments.length > 0 && (
-                  <p className="mt-4 text-xs text-neutral-400">{t("mail.attachmentsHint")}</p>
                 )}
               </>
             )}
