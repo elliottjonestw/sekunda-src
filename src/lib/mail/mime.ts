@@ -1,5 +1,5 @@
 import type { ImapBodyPart } from "@secondbrain/shared";
-import type { MailAddress, MailAttachment } from "./types";
+import type { MailAddress, MailAttachment, MailLink } from "./types";
 
 /**
  * Turning raw internet mail into text, once, on the client.
@@ -165,23 +165,103 @@ export function header(headers: Headers, name: string): string {
 }
 
 /**
+ * Split a structured header on the semicolons that are OUTSIDE quoted strings,
+ * unquoting as it goes.
+ *
+ * `value.split(";")` cuts `filename="report; final.pdf"` in half, and on the
+ * download path the half that survives is what gets written to disk. Boundaries
+ * are the other victim: `boundary="----=_Part_1; 2"` is legal and splitting it
+ * loses every part of the message.
+ */
+function splitParams(value: string): string[] {
+  const parts: string[] = [];
+  let buf = "";
+  let quoted = false;
+  for (let i = 0; i < value.length; i++) {
+    const ch = value[i];
+    if (quoted && ch === "\\" && i + 1 < value.length) { buf += value[++i]; continue; }
+    if (ch === '"') { quoted = !quoted; continue; }
+    if (ch === ";" && !quoted) { parts.push(buf); buf = ""; continue; }
+    buf += ch;
+  }
+  parts.push(buf);
+  return parts;
+}
+
+/**
+ * RFC 2231's charset-tagged, percent-encoded parameter: `UTF-8''%E6%97%A5.pdf`.
+ *
+ * The charset is part of the value rather than assumed, which is the whole
+ * point of the form — a Latin-1 sender and a UTF-8 sender both use it and mean
+ * different bytes. A value with no `'` separators is taken as already-plain
+ * text, because a sender that wrote `filename*=report.pdf` meant `report.pdf`.
+ */
+function decodeExtended(value: string): string {
+  const parts = value.split("'");
+  const charset = parts.length >= 3 ? parts[0] : "";
+  const encoded = parts.length >= 3 ? parts.slice(2).join("'") : value;
+  const bytes: number[] = [];
+  for (let i = 0; i < encoded.length; i++) {
+    if (encoded[i] === "%" && /^[0-9a-f]{2}$/i.test(encoded.slice(i + 1, i + 3))) {
+      bytes.push(parseInt(encoded.slice(i + 1, i + 3), 16));
+      i += 2;
+      continue;
+    }
+    bytes.push(encoded.charCodeAt(i) & 0xff);
+  }
+  return decodeBytes(Uint8Array.from(bytes), charset || "utf-8");
+}
+
+/**
  * A `type/subtype; key=value` header, split into its parts.
  *
- * Handles quoted parameter values; does NOT handle RFC 2231 continuations
- * (`filename*0=`), which show up on very long or non-ASCII attachment names.
- * The cost is now a wrong *saved filename* rather than a wrong label — the
- * download path uses this name — so it is worth more than it was.
+ * **RFC 2231 is handled** — `filename*0=`/`filename*1=` continuations and
+ * `filename*=UTF-8''%E6%97%A5.pdf` extended values, in either combination.
+ * Senders reach for that form for long or non-ASCII names, which is exactly
+ * when the name matters most: before this,
+ * `filename*0="invoice-2026-"; filename*1="q3.pdf"` parsed as the truncated
+ * `invoice-2026-`, and the download path saved a real file under it.
+ *
+ * Sections are gathered before any of them is decoded, because a section is
+ * only a piece: a multi-byte character can be split across two of them, so
+ * decoding each one alone produces two mojibake halves rather than one letter.
+ *
+ * RFC 2047 encoded words are still decoded for plain parameters — plenty of
+ * senders use them here despite the spec preferring 2231 — but never for an
+ * extended value, which has already been decoded and where a `=?…?=` is a
+ * literal part of the name.
  */
 export function parseContentType(value: string): { type: string; params: Record<string, string> } {
-  const [head, ...rest] = value.split(";");
-  const params: Record<string, string> = {};
+  const [head, ...rest] = splitParams(value);
+  const plain: Record<string, string> = {};
+  const sections = new Map<string, Map<number, string>>();
+  const extended = new Set<string>();
+
   for (const part of rest) {
     const eq = part.indexOf("=");
     if (eq < 0) continue;
     const key = part.slice(0, eq).trim().toLowerCase();
-    let raw = part.slice(eq + 1).trim();
-    if (raw.startsWith('"')) raw = raw.slice(1, raw.lastIndexOf('"') > 0 ? raw.lastIndexOf('"') : undefined);
-    params[key] = decodeWords(raw);
+    const raw = part.slice(eq + 1).trim();
+    const shape = /^([^*]+)(?:\*(\d+))?(\*)?$/.exec(key);
+    if (!shape) continue;
+    const [, name, section, star] = shape;
+    if (section === undefined && !star) { plain[name] = raw; continue; }
+    if (star) extended.add(name);
+    const bySection = sections.get(name) ?? new Map<number, string>();
+    bySection.set(section === undefined ? 0 : Number(section), raw);
+    sections.set(name, bySection);
+  }
+
+  const params: Record<string, string> = {};
+  for (const [name, raw] of Object.entries(plain)) params[name] = decodeWords(raw);
+  // Written second so a continuation wins over a plain parameter of the same
+  // name: a sender that provides both is offering the short one as a fallback.
+  for (const [name, bySection] of sections) {
+    const joined = [...bySection.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([, raw]) => raw)
+      .join("");
+    params[name] = extended.has(name) ? decodeExtended(joined) : decodeWords(joined);
   }
   return { type: head.trim().toLowerCase(), params };
 }
@@ -258,32 +338,306 @@ function isoOrNull(value: string): string | null {
 // Bodies
 // ---------------------------------------------------------------------------
 
+const ENTITIES: Record<string, string> = {
+  nbsp: " ", amp: "&", lt: "<", gt: ">", quot: '"', apos: "'",
+  mdash: "—", ndash: "–", hellip: "…", bull: "•", middot: "·",
+  lsquo: "‘", rsquo: "’", ldquo: "“", rdquo: "”",
+  copy: "©", reg: "®", trade: "™", deg: "°", times: "×",
+  euro: "€", pound: "£", yen: "¥", cent: "¢",
+};
+
 /**
- * HTML to something speakable.
+ * HTML entities to the characters they stand for.
+ *
+ * Its own function because the BODY is not the only thing that needs it: an
+ * `href` is entity-encoded too, and a query string full of `&amp;` is a
+ * different URL from the one the sender wrote. Getting that wrong on a
+ * verification link produces a link that looks right and does not work.
+ *
+ * Each pass scans forward from the end of its own match, so `&amp;lt;` decodes
+ * once to `&lt;` rather than twice to `<`.
+ */
+export function decodeEntities(text: string): string {
+  const codePoint = (n: number) => (n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : "");
+  return text
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex: string) => codePoint(parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_, digits: string) => codePoint(Number(digits)))
+    .replace(/&([a-z][a-z0-9]*);/gi, (whole, name: string) => ENTITIES[name.toLowerCase()] ?? whole);
+}
+
+/**
+ * The schemes a link out of a message is allowed to have.
+ *
+ * This is the injection boundary for the whole link feature, and it is enforced
+ * HERE — at parse time, on the way into `MailLink` — rather than at the click,
+ * so no later code can hold a `MailLink` that isn't already safe to open.
+ *
+ * On desktop the opener plugin's own scope (`opener:default`) restricts schemes
+ * as well, so that path is guarded twice. On the web there is no second guard:
+ * the click is `window.open`, and `window.open("javascript:…")` runs the script
+ * in this origin. So this list is load-bearing rather than defence in depth.
+ */
+const LINK_SCHEMES = new Set(["http:", "https:", "mailto:"]);
+
+/** Links one message may contribute. A newsletter has dozens; nothing sane has
+ *  hundreds, and an unbounded list is a page full of rows nobody asked for. */
+export const MAX_LINKS = 100;
+
+/**
+ * One href, validated and normalized — or null, which means it is not offered.
+ *
+ * Everything the view will display comes out of `URL`'s own parse rather than
+ * out of the string the sender wrote, and that is the anti-spoofing measure:
+ *
+ *  - `host` is `URL.hostname`, so `https://apple.com@evil.com/` reports
+ *    `evil.com` (the part that decides where the request goes) and an IDN
+ *    homograph like `аpple.com` reports its punycode `xn--pple-43d.com`. A row
+ *    that showed only the sender's text would show the lie in both cases.
+ *  - credentials are stripped outright. They change nothing about *where* the
+ *    link goes — the host is the host either way — so dropping them only
+ *    removes the half of the URL that exists to be misread.
+ *
+ * A relative href fails `new URL` and is dropped, which is correct: a relative
+ * link in mail has no base document to resolve against and cannot be opened.
+ */
+export function safeLink(href: string, label: string | null = null): MailLink | null {
+  // Control characters are stripped rather than rejected: `java\nscript:` is an
+  // old filter-evasion trick, and `URL` would happily ignore the newline.
+  const value = decodeEntities(href).replace(/[\u0000-\u001f\u007f]/g, "").trim();
+  if (!value) return null;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  if (!LINK_SCHEMES.has(url.protocol)) return null;
+  url.username = "";
+  url.password = "";
+  const host = url.protocol === "mailto:" ? safeDecodeUri(url.pathname) : url.hostname;
+  if (!host) return null;
+  return { url: url.href, host, label: label || null };
+}
+
+function safeDecodeUri(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+/** Dedupe by URL, keeping the first occurrence and the first non-empty label,
+ *  and cap the result. Order is meaningful — it is the numbering the body's
+ *  `[n]` markers refer to — so this never sorts. */
+export function mergeLinks(links: MailLink[]): MailLink[] {
+  const byUrl = new Map<string, MailLink>();
+  for (const link of links) {
+    const held = byUrl.get(link.url);
+    if (!held) {
+      if (byUrl.size >= MAX_LINKS) break;
+      byUrl.set(link.url, link);
+      continue;
+    }
+    // An image link and a text link to the same place are one row, and the one
+    // with words on it is the one worth labelling.
+    if (!held.label && link.label) byUrl.set(link.url, { ...held, label: link.label });
+  }
+  return [...byUrl.values()];
+}
+
+/** Markup out, entities decoded, whitespace collapsed — for an anchor's label,
+ *  which is a phrase rather than a document. */
+function stripTags(html: string): string {
+  return decodeEntities(html.replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim();
+}
+
+/** Sentinels that survive tag-stripping, so block structure can be applied to
+ *  whole lines once the markup around them is gone. */
+const QUOTE_IN = "\u0002";
+const QUOTE_OUT = "\u0003";
+const BULLET = "\u0006";
+
+/**
+ * HTML to something readable and speakable, plus the links it contained.
  *
  * Not a renderer and not a sanitizer — the output is plain text that never goes
- * near `dangerouslySetInnerHTML` or the Markdown pipeline. Scripts and styles
- * are dropped whole because their *contents* would otherwise survive as text,
- * which is how a "plain text" summary ends up reciting CSS.
+ * near `dangerouslySetInnerHTML` or the Markdown pipeline. Scripts, styles,
+ * comments and `<head>` are dropped whole because their *contents* would
+ * otherwise survive as text, which is how a "plain text" summary ends up
+ * reciting CSS or a `<title>`.
+ *
+ * **Anchors are harvested rather than discarded.** The old version turned
+ * `<a href="https://…/verify?token=…">Verify your email</a>` into the three
+ * words `Verify your email`: not an unclickable link, no link at all, and no
+ * way to recover it. Every accepted href becomes a `MailLink` and leaves a
+ * `[n]` marker behind at the point it appeared, which is what tells the "Verify"
+ * button apart from the footer's "Privacy policy" in a message with forty of
+ * them. A rejected href leaves the anchor's words alone and adds nothing.
+ *
+ * **Block structure survives as text.** Lists get `- `, blockquotes get `> `
+ * per line at their nesting depth, headings and paragraphs get a blank line.
+ * The quote prefix is not decoration: it is what lets `splitQuoted` find the
+ * reply trail in an HTML message, the same way it does in a plain-text one.
  */
-function htmlToText(html: string): string {
-  return html
-    .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, " ")
-    .replace(/<\/(p|div|tr|li|h[1-6])>/gi, "\n")
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/&quot;/gi, '"')
-    .replace(/&#(\d+);/g, (_, n: string) => String.fromCharCode(Number(n)))
-    .replace(/[ \t]+/g, " ")
-    // Tags become spaces, so every line that had markup around it now starts or
+function htmlToText(html: string): { text: string; links: MailLink[] } {
+  const links: MailLink[] = [];
+  const numbers = new Map<string, number>();
+
+  const stripped = html
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<(script|style|head|title)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, " ");
+
+  const marked = stripped.replace(
+    /<a\b([^>]*)>([\s\S]*?)<\/a\s*>/gi,
+    (_whole, attrs: string, inner: string) => {
+      const href = /\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(attrs);
+      const raw = href ? (href[1] ?? href[2] ?? href[3] ?? "") : "";
+      const link = raw ? safeLink(raw, stripTags(inner).slice(0, 120)) : null;
+      if (!link) return inner;
+      let n = numbers.get(link.url);
+      if (n === undefined) {
+        if (links.length >= MAX_LINKS) return inner;
+        links.push(link);
+        n = links.length;
+        numbers.set(link.url, n);
+      } else if (!links[n - 1].label && link.label) {
+        links[n - 1] = { ...links[n - 1], label: link.label };
+      }
+      return `${inner} [${n}]`;
+    },
+  );
+
+  const flattened = decodeEntities(
+    marked
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<li\b[^>]*>/gi, `\n${BULLET}`)
+      .replace(/<blockquote\b[^>]*>/gi, `\n${QUOTE_IN}\n`)
+      .replace(/<\/blockquote\s*>/gi, `\n${QUOTE_OUT}\n`)
+      // Generous on both the open and close tag: `\n{3,}` collapses below, so
+      // an extra break costs nothing and a missing one runs two paragraphs
+      // together.
+      .replace(/<\/?(p|h[1-6]|hr|ul|ol|table|section|article)\b[^>]*>/gi, "\n\n")
+      // `li` is NOT in this list: its opening tag already broke the line, and
+      // closing it too puts a blank line between every bullet.
+      .replace(/<\/(div|tr)\s*>/gi, "\n")
+      .replace(/<[^>]+>/g, " "),
+  )
+    .replace(/[ \t\u00a0]+/g, " ")
+    // Tags became spaces, so every line that had markup around it now starts or
     // ends with one — trim per line, not just at the ends of the message.
-    .replace(/[ \t]*\n[ \t]*/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+    .replace(/[ \t]*\n[ \t]*/g, "\n");
+
+  // Block structure, applied per line now that there is no markup left to
+  // confuse a line boundary with an element boundary.
+  const out: string[] = [];
+  let depth = 0;
+  for (const line of flattened.split("\n")) {
+    if (line === QUOTE_IN) { depth = Math.min(depth + 1, 8); continue; }
+    if (line === QUOTE_OUT) { depth = Math.max(depth - 1, 0); continue; }
+    const bulleted = line.startsWith(BULLET);
+    const content = (bulleted ? line.slice(BULLET.length) : line).trim();
+    // A blank line inside a quote stays blank rather than becoming a bare `>`.
+    // Mail clients do write it that way, but here it survives the `\n{3,}`
+    // collapse below and leaves a ladder of `>` between every paragraph.
+    if (!content) { out.push(""); continue; }
+    out.push(`${"> ".repeat(depth)}${bulleted ? "- " : ""}${content}`);
+  }
+
+  return { text: out.join("\n").replace(/\n{3,}/g, "\n\n").trim(), links };
+}
+
+/**
+ * Bare URLs written out in the text, added to whatever the markup already gave.
+ *
+ * The other half of the problem: a great many services send their sign-in links
+ * as `text/plain` with the URL spelled out, where there is no `href` to harvest
+ * and the address is visible but not actionable. Deduped against the links
+ * already found, so an `<a>` whose words *are* its URL stays one row.
+ *
+ * Trailing punctuation is trimmed because a URL at the end of a sentence
+ * collects the full stop, and an unbalanced closing bracket because a URL
+ * inside parentheses collects that too — both produce a 404 that reads as a
+ * broken link rather than as a parsing mistake.
+ */
+export function addTextLinks(links: MailLink[], text: string): MailLink[] {
+  const found: MailLink[] = [];
+  for (const match of text.matchAll(/(?:https?:\/\/|mailto:)[^\s<>"'`\]]+/gi)) {
+    let raw = match[0].replace(/[.,;:!?'"]+$/, "");
+    while (raw.endsWith(")") && !raw.includes("(")) raw = raw.slice(0, -1);
+    const link = safeLink(raw);
+    if (link) found.push(link);
+  }
+  return mergeLinks([...links, ...found]);
+}
+
+// ---------------------------------------------------------------------------
+// Quoted replies
+// ---------------------------------------------------------------------------
+
+/**
+ * Where the new message ends and the thread underneath it begins.
+ *
+ * Conservative on purpose, and the direction matters: a false positive HIDES
+ * something the sender wrote, which is much worse than a false negative that
+ * merely leaves a long message long. So this only fires on the delimiters mail
+ * clients actually emit, it never fires when the split would leave nothing
+ * visible, and it declines to bother for a trail too short to be in the way.
+ *
+ * Signatures are deliberately NOT collapsed, even though `-- ` is the one
+ * reliable delimiter here. A sign-off is short and is usually the part you
+ * wanted to read.
+ *
+ * This is a DISPLAY split. `MailMessageDetail.body` keeps the whole message, so
+ * search still reaches the trail and the assistant still gets the context of
+ * what was said earlier in the thread.
+ */
+export function splitQuoted(body: string): { visible: string; quoted: string } {
+  const whole = { visible: body, quoted: "" };
+  const lines = body.split("\n");
+  const at = quoteStart(lines);
+  if (at <= 0) return whole;
+
+  const visible = lines.slice(0, at).join("\n").replace(/\s+$/, "");
+  const quoted = lines.slice(at).join("\n").trim();
+  if (!visible.trim()) return whole;
+  // Not worth a control for: hiding four lines behind a button people have to
+  // press is a worse read than four lines.
+  if (quoted.length < 120 || quoted.split("\n").length < 3) return whole;
+  return { visible, quoted };
+}
+
+function quoteStart(lines: string[]): number {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    const next = (lines[i + 1] ?? "").trim();
+
+    // Outlook: a rule, then the forwarded message's own headers.
+    if (/^_{5,}$/.test(line) && /^(From|Sent|To|Subject):/i.test(next)) return i;
+    if (/^-{2,}\s*(Original Message|Forwarded message)\s*-{2,}$/i.test(line)) return i;
+
+    // "On <date>, <someone> wrote:" — what almost every client writes, and
+    // often folded onto a second line by the sending client's own wrapping.
+    if (line.length < 240 && /^On\b[\s\S]*\bwrote:$/.test(line)) return i;
+    if (line.length < 240 && /^On\b/.test(line) && /\bwrote:$/.test(next)) return i;
+
+    // A run of quoted lines carrying the rest of the message — which covers
+    // HTML replies too, because `htmlToText` renders a <blockquote> this way.
+    if (line.startsWith(">") && quotedToEnd(lines, i)) {
+      const previous = (lines[i - 1] ?? "").trim();
+      return previous && /\bwrote:$/.test(previous) ? i - 1 : i;
+    }
+  }
+  return -1;
+}
+
+/** Is what follows mostly quotation? A single `>` line in the middle of a
+ *  message is someone quoting a sentence, not the start of the thread. */
+function quotedToEnd(lines: string[], from: number): boolean {
+  const rest = lines.slice(from).map((l) => l.trim()).filter(Boolean);
+  if (rest.length < 3) return false;
+  const quoted = rest.filter((l) => l.startsWith(">")).length;
+  return quoted / rest.length >= 0.6;
 }
 
 /** Undo the transfer encoding, then the charset. Order is not optional: base64
@@ -298,6 +652,7 @@ function decodePart(body: string, encoding: string, charset: string): string {
 
 interface Walked {
   text: string;
+  links: MailLink[];
   attachments: MailAttachment[];
 }
 
@@ -313,11 +668,17 @@ interface Walked {
  *  - an explicit `attachment` disposition, or any non-text leaf — listed, never
  *    decoded. There is no download path, and decoding a 4 MB PDF into a string
  *    to throw it away is the kind of thing that only shows up under load.
+ *
+ * LINKS are the one thing gathered from every alternative rather than only from
+ * the part that won. A sender whose plain twin says "tap the button below" puts
+ * the sign-in URL in the HTML twin and nowhere else, and that URL is exactly the
+ * one worth having — so the chosen part's links come FIRST (they are what the
+ * body's `[n]` markers count) and the siblings' are appended behind them.
  */
 function walkPart(raw: string, depth: number): Walked {
   // Nesting is bounded: a hand-crafted message can nest multiparts far enough
   // to blow the stack, and nothing legitimate goes past a handful.
-  if (depth > 10) return { text: "", attachments: [] };
+  if (depth > 10) return { text: "", links: [], attachments: [] };
 
   const split = /\r?\n\r?\n/.exec(raw);
   const headers = parseHeaders(split ? raw.slice(0, split.index) : raw);
@@ -330,7 +691,7 @@ function walkPart(raw: string, depth: number): Walked {
 
   if (type.startsWith("multipart/")) {
     const boundary = params.boundary;
-    if (!boundary) return { text: "", attachments: [] };
+    if (!boundary) return { text: "", links: [], attachments: [] };
     // Split on the boundary, dropping the preamble and the closing epilogue.
     // Non-capturing: `String.split` interleaves capture groups into its result,
     // so a `(--)?` here inserts an `undefined` between every part.
@@ -343,11 +704,13 @@ function walkPart(raw: string, depth: number): Walked {
       const plain = parts.find((p) => p.text.trim());
       return {
         text: plain?.text ?? "",
+        links: mergeLinks([...(plain?.links ?? []), ...parts.flatMap((p) => p.links)]),
         attachments: parts.flatMap((p) => p.attachments),
       };
     }
     return {
       text: parts.map((p) => p.text).filter(Boolean).join("\n\n"),
+      links: mergeLinks(parts.flatMap((p) => p.links)),
       attachments: parts.flatMap((p) => p.attachments),
     };
   }
@@ -356,6 +719,7 @@ function walkPart(raw: string, depth: number): Walked {
   if (isAttachment || !type.startsWith("text/")) {
     return {
       text: "",
+      links: [],
       // No part number: this walker works from the bytes, which carry no
       // numbering. `attachmentsFromStructure` is the path that has one, and it
       // is preferred whenever the server gave us a BODYSTRUCTURE.
@@ -370,7 +734,11 @@ function walkPart(raw: string, depth: number): Walked {
   }
 
   const text = decodePart(body, encoding, params.charset ?? "utf-8");
-  return { text: type === "text/html" ? htmlToText(text) : text.trim(), attachments: [] };
+  if (type === "text/html") {
+    const { text: flattened, links } = htmlToText(text);
+    return { text: flattened, links, attachments: [] };
+  }
+  return { text: text.trim(), links: [], attachments: [] };
 }
 
 /**
@@ -381,11 +749,21 @@ function walkPart(raw: string, depth: number): Walked {
  * produced any text, so an HTML-only message still yields its converted text
  * rather than nothing.
  */
-export function parseMessage(raw: string): { headers: Headers; text: string; attachments: MailAttachment[] } {
+export function parseMessage(raw: string): {
+  headers: Headers;
+  text: string;
+  links: MailLink[];
+  attachments: MailAttachment[];
+} {
   const split = /\r?\n\r?\n/.exec(raw);
   const headers = parseHeaders(split ? raw.slice(0, split.index) : raw);
-  const { text, attachments } = walkPart(raw, 0);
-  return { headers, text: text.replace(/\r\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim(), attachments };
+  const { text, links, attachments } = walkPart(raw, 0);
+  return {
+    headers,
+    text: text.replace(/\r\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim(),
+    links,
+    attachments,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -404,15 +782,21 @@ export function parseMessage(raw: string): { headers: Headers; text: string; att
  * point rather than a reuse of the walker because there is no message around
  * these bytes: the type and charset came from BODYSTRUCTURE, not from headers
  * that are present.
+ *
+ * Only ONE part is fetched on this path, so unlike `walkPart` there are no
+ * sibling alternatives to gather links from — an HTML twin's links are out of
+ * reach here. That is the existing shape of the large-message path rather than
+ * a new limitation: the whole point of it is not to download the rest.
  */
 export function decodeStandalonePart(
   body: string,
   encoding: string,
   charset: string | null,
   contentType: string,
-): string {
+): { text: string; links: MailLink[] } {
   const text = decodePart(body, encoding, charset ?? "utf-8");
-  return contentType.trim().toLowerCase() === "text/html" ? htmlToText(text) : text.trim();
+  if (contentType.trim().toLowerCase() === "text/html") return htmlToText(text);
+  return { text: text.trim(), links: [] };
 }
 
 /**

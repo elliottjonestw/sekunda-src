@@ -54,6 +54,31 @@ export interface MailAttachment {
   size: number | null;
 }
 
+/**
+ * A link out of a message — already validated, already normalized.
+ *
+ * There is no field here holding the string the sender wrote, and that is the
+ * design. `safeLink` in `mime.ts` is the only way to make one: it parses with
+ * `URL`, refuses every scheme outside http/https/mailto, and strips credentials.
+ * So a `MailLink` in hand is always safe to open, and a view cannot accidentally
+ * render the sender's version of the address instead of the real one.
+ */
+export interface MailLink {
+  /** Absolute, normalized, credential-free. Safe to hand to the opener. */
+  url: string;
+  /**
+   * The host the request will actually go to — `URL.hostname`, never text from
+   * the message. This is the anti-spoofing field: it reports `evil.com` for
+   * `https://apple.com@evil.com/`, and punycode (`xn--pple-43d.com`) for an IDN
+   * homograph, both of which a sender-supplied label would happily hide. For a
+   * `mailto:` it is the address instead.
+   */
+  host: string;
+  /** The anchor's own words, when it had any. Sender-controlled, so it is
+   *  shown BESIDE the host and never instead of it. */
+  label: string | null;
+}
+
 export interface MailMessageDetail extends MailMessageSummary {
   cc: MailAddress[];
   reply_to: MailAddress[];
@@ -64,6 +89,18 @@ export interface MailMessageDetail extends MailMessageSummary {
   body: string;
   /** True when the body was cut — by the fetch's octet cap or by ours. */
   body_truncated: boolean;
+  /**
+   * Every link the message offered, in the order they appeared.
+   *
+   * Position is meaningful: the `[n]` markers `htmlToText` leaves in `body`
+   * are 1-based indexes into this list. Entries past the last marker are ones
+   * that had no anchor to mark — bare URLs written out in the text, and links
+   * that only existed in an alternative part the body didn't come from.
+   *
+   * Harvested from the FULL text before `body` was capped, so a sign-in link
+   * below the cut is still reachable.
+   */
+  links: MailLink[];
   /** Listed, and downloadable one at a time on demand — nothing is fetched
    *  until it is asked for. Still a read: see `saveAttachment`. */
   attachments: MailAttachment[];

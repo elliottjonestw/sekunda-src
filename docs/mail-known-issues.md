@@ -55,14 +55,39 @@ is the *fallback* body, never preferred over the message's own.
 `chooseTextPart` picks by type: plain, then HTML, then the same two inside an
 attached message. Position is not consulted.
 
-### 1.7 RFC 2231 filename continuations unhandled — **OPEN**
-`filename*0=`/`filename*1=` still parse as a truncated name. Was scheduled for
-phase 6, alongside the corpus that would have proven it.
+### 1.7 RFC 2231 filename continuations unhandled — FIXED (phase 8)
+`parseContentType` now gathers `filename*0=`/`filename*1=` continuations and
+decodes `filename*=UTF-8''%E6%97%A5.pdf` extended values, in either combination.
+Sections are joined *before* decoding, because a multi-byte character can be
+split across two of them and decoding each alone gives two mojibake halves.
 
-**It costs more than it did.** The original note said the name was display-only
-because nothing could be downloaded — that is no longer true (§4), so a long or
-non-ASCII attachment name now produces a wrong *saved filename*, not merely a
-wrong label. Noted in `parseContentType`.
+Fixed with the links work rather than with the corpus that was supposed to prove
+it, because the cost had grown: the original note said the name was display-only
+since nothing could be downloaded, and §4 made that false. A truncated name was
+producing a wrong *saved file*.
+
+The same function also stopped splitting parameters on semicolons inside quotes,
+which was the other way a filename got cut in half — and, more quietly, the way
+`boundary="----=_Part_1; 2"` lost every part of a message.
+
+Tests: `test/mime.test.ts`.
+
+### 1.7a HTML links were discarded entirely — FIXED (phase 8)
+Not on the original list, because it was found later and is worse than anything
+that was: `htmlToText` stripped every tag, so
+`<a href="https://…/verify?token=…">Verify your email</a>` became the three words
+`Verify your email`. Not an unclickable link — **no link at all**, and no way to
+recover the address. HTML-only sign-in mail was unusable rather than merely
+plain.
+
+Anchors are now harvested into `MailMessageDetail.links` with a `[n]` marker left
+where each one stood, and the reader shows them as a list under the body. The
+body itself is unchanged: still inert plain text, still no HTML renderer, still
+no clickable body text. See the plain-text bullet in §4.
+
+`multipart/alternative` gathers links from *every* alternative rather than only
+the part that won, because the common shape of the failure is a plain twin
+saying "tap the button below" while the URL exists only in the HTML twin.
 
 ### 1.8 Attachment sizes are the encoded length — FIXED (phase 1)
 Sizes come from `BODYSTRUCTURE`, which is the server's own count. The old figure
@@ -212,6 +237,18 @@ is its own project.
   relay/command headers say so where the old blanket claim lived.
 - **No inline images** — still true. Message bodies render as plain text and
   widening that is not a rendering choice but a security one.
+- **Links were unreachable** — FIXED (phase 8, §1.7a), and fixed *without*
+  rendering any markup. The links are listed beside the body rather than made
+  live inside it, each row leading with `URL.hostname` — the only part of a link
+  that decides where the request goes, and the part a display name exists to
+  hide. Credentials in the authority are stripped, IDN hosts show as punycode,
+  and every scheme outside http/https/mailto is refused at parse time, which is
+  what stops `window.open` running a `javascript:` url on the web build.
+  Clicking opens the system browser, never this webview.
+- **Quoted reply trails are collapsed** — new in phase 8, display-only:
+  `MailMessageDetail.body` still holds the whole message, so search and the
+  assistant are unaffected. Conservative by design — a false positive hides
+  something the sender wrote. Signatures are deliberately not collapsed.
 - **iCloud's `TEXT` search may not index bodies** — **OPEN, still unverified.**
   Phase 6 was to answer this. If it matches headers only, the search box is
   quietly weaker than it looks and the tool description's hedge is doing real
@@ -265,9 +302,15 @@ leaving it to be worked out from the sections above:
 - **The connection-per-op cost was never measured**, only estimated from the
   code. The estimate says there is plenty of headroom on the web path; the
   desktop path has no cap of ours at all.
-- **Three small correctness items remain open** — RFC 2231 filenames (§1.7,
-  which got *more* expensive when download shipped), the permissive fake server
-  (§5.1), and whether iCloud's `TEXT` search indexes bodies (§4).
+- **Two small correctness items remain open** — the permissive fake server
+  (§5.1) and whether iCloud's `TEXT` search indexes bodies (§4). RFC 2231
+  filenames (§1.7) were the third and are now fixed, in phase 8.
+
+Phase 8 (links, block structure, quoted-reply folding, RFC 2231) changed only
+the client's text layer — `src/lib/mail/mime.ts` and `MailView` — so none of the
+above moved: no executor, no op, no wire shape, and no new network call. It
+inherits the same gap as everything else here, that its fixtures are constructed
+rather than drawn from real mail.
 
 None of that is a reason the feature does not work — it does. It is the list of
 what a future problem would most likely be, and where to look first.

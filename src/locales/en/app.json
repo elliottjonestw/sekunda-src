@@ -583,7 +583,15 @@
     "showingAll_other": "{{count}} messages.",
     "loadOlder": "Load older",
     "showingOf": "Showing {{count}} of {{total}}.",
-    "showingCapped": "Showing {{count}}. This mailbox has {{total}} matches — more than can be paged through here."
+    "showingCapped": "Showing {{count}}. This mailbox has {{total}} matches — more than can be paged through here.",
+    "links_one": "1 link in this message",
+    "links_other": "{{count}} links in this message",
+    "linksNote": "Links open in your browser. Check the address before signing in to anything.",
+    "openLink": "Open in browser",
+    "copyLink": "Copy address",
+    "copied": "Copied",
+    "showQuoted": "Show quoted text",
+    "hideQuoted": "Hide quoted text"
   },
   "assistant": {
     "title": "AI Assistant",

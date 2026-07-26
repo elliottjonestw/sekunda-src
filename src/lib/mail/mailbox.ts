@@ -9,7 +9,7 @@ import {
 } from "./cache";
 import { imapCall } from "./client";
 import {
-  attachmentsFromStructure, decodeMailboxName, decodeStandalonePart, decodeWords, header,
+  addTextLinks, attachmentsFromStructure, decodeMailboxName, decodeStandalonePart, decodeWords, header,
   parseAddresses, parseHeaders, parseMailDate, parseMessage,
 } from "./mime";
 import {
@@ -306,11 +306,14 @@ export async function getMessage(
   const whole = msg.raw !== undefined ? parseMessage(msg.raw) : null;
 
   const headers = whole ? whole.headers : parseHeaders(msg.headers ?? "");
-  const text = whole
-    ? whole.text
-    : msg.part
-      ? decodeStandalonePart(msg.part.body, msg.part.encoding, msg.part.charset, msg.part.type)
-      : "";
+  const part = !whole && msg.part
+    ? decodeStandalonePart(msg.part.body, msg.part.encoding, msg.part.charset, msg.part.type)
+    : null;
+  const text = whole?.text ?? part?.text ?? "";
+  // Harvested from the FULL text, deliberately before the body cap below: a
+  // verification link sitting past the cut is precisely the one worth keeping,
+  // and the list is a few hundred bytes where the body is twenty thousand.
+  const links = addTextLinks(whole?.links ?? part?.links ?? [], text);
   // The structure's list wins wherever we have one, on both paths: its sizes
   // are the server's own count rather than whatever survived truncation, and it
   // names the part numbers. The walker's list is the fallback for a message the
@@ -337,6 +340,7 @@ export async function getMessage(
     size: msg.size,
     body,
     body_truncated: !!msg.truncated || text.length > MAX_BODY_CHARS,
+    links,
     attachments,
   };
   rememberMessage(account.username, mailbox, result.uidvalidity, detail);

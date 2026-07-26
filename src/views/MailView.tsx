@@ -1,15 +1,21 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, Ban, Download, Inbox, Loader2, Paperclip, RefreshCw, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  ArrowLeft, Ban, Check, ChevronDown, Copy, Download, Inbox, Link2, Loader2, Paperclip,
+  RefreshCw, Trash2,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { MAIL_MAX_ATTACHMENT_BYTES } from "@secondbrain/shared";
 import { getMailSettings, saveMailSettings, type MailFolder } from "../lib/settings";
 import {
   byDateDescending, DEFAULT_MAILBOX, deleteMessage, getMessage, listFolders, loadHeaders, mailboxStatus,
-  markSeen, moveToInbox, moveToJunk, peekMessage, resolveJunkMailbox, resolveTrashMailbox, saveAttachment, searchMail,
-  type MailAddress, type MailAttachment, type MailboxStatus, type MailMessageDetail,
+  markSeen, moveToInbox, moveToJunk, peekMessage, resolveJunkMailbox, resolveTrashMailbox, saveAttachment,
+  searchMail, splitQuoted,
+  type MailAddress, type MailAttachment, type MailboxStatus, type MailLink, type MailMessageDetail,
   type MailMessageSummary,
 } from "../lib/mail";
 import { fmtBytes, fmtDateTime } from "../lib/format";
+import { isTauri } from "../lib/platform";
 import { Button } from "../components/ui";
 import { useFirstLoad, firstLoadScreen, SlowLoad } from "../components/ViewGate";
 
@@ -28,11 +34,16 @@ import { useFirstLoad, firstLoadScreen, SlowLoad } from "../components/ViewGate"
  *     trap `searchEvents` documents for CalDAV: a keystroke is a network call).
  *   - **Opened messages are remembered for the life of the view**, so clicking
  *     back and forth between two messages doesn't re-fetch either.
- *   - **Two write actions, and only two: mark-as-read and delete.** Opening a
- *     message marks it read (`markSeen`); the message view has a Delete button
- *     that moves it to Trash (`deleteMessage`). Both are UI-only — the assistant
- *     builds neither op, so asking it to read mail never changes a flag. There
- *     is still no archive, no move, no reply, and no send.
+ *   - **A small, named set of writes: mark-as-read, delete and move.** Opening a
+ *     message marks it read (`markSeen`); the toolbar has Delete (to Trash, or
+ *     an expunge from Trash) and Move to Junk / Move to Inbox. All are UI-only —
+ *     the assistant builds none of these ops, so asking it to read mail never
+ *     changes a flag. There is still no reply and no send.
+ *
+ * The one thing here that renders sender-controlled data as anything other than
+ * inert text is the LINK LIST, and it renders it as data rather than as markup:
+ * see `MessageLinks` and `safeLink` in `mime.ts`. The body itself is still plain
+ * text with nothing in it clickable.
  */
 
 /** Long enough that typing a word is one query, short enough to feel live. */
@@ -81,6 +92,173 @@ function ToolbarButton({
       {busy ? <Loader2 size={15} className="animate-spin" /> : icon}
       <span className="hidden sm:inline">{label}</span>
     </button>
+  );
+}
+
+/** Above this many, the link list arrives collapsed. A sign-in mail has one or
+ *  two and wants them in sight; a newsletter has forty and doesn't. */
+const LINKS_SHOWN_UNCOLLAPSED = 6;
+
+/**
+ * Open a link out of a message — in the USER'S BROWSER, never in here.
+ *
+ * This webview holds the signed-in session, and a message body is written by a
+ * stranger. Same call and same reasoning as `RssWidget` and `YouTubeEmbed`. It
+ * is also why a link is a `<button>` rather than an `<a href>`: in the packaged
+ * app an anchor navigates the webview itself away from the application.
+ *
+ * The url is safe by construction — `safeLink` in `mime.ts` built it, so it is
+ * already parsed, already http/https/mailto, already credential-free. On the
+ * web `window.open` would happily run a `javascript:` url in this origin, which
+ * is why that filter lives at parse time and not here.
+ */
+function openLink(url: string): void {
+  if (isTauri()) void openUrl(url);
+  else window.open(url, "_blank", "noopener");
+}
+
+/**
+ * One link: where it really goes, what the sender called it, and the address.
+ *
+ * The HOST leads, in the strongest type in the row, because it is the only part
+ * of a link that decides where the request lands and the only part the sender
+ * cannot dress up — `MailLink.host` comes from `URL.hostname`, so a display
+ * name of "apple.com" over a link to `evil.com` shows `evil.com` here, and an
+ * IDN homograph shows its punycode. The sender's own words sit beside it,
+ * clearly secondary, and the full address is underneath. Never the label alone:
+ * hiding the address is the entire phishing surface this feature could add.
+ */
+function LinkRow({ link, index }: { link: MailLink; index: number }) {
+  const { t } = useTranslation();
+  const [copied, setCopied] = useState(false);
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(link.url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // No clipboard permission. The address is on screen to be read either way.
+    }
+  }
+
+  return (
+    <li className="flex items-start gap-1">
+      <span className="w-5 shrink-0 pt-2 text-right text-xs tabular-nums text-neutral-400">{index}</span>
+      <button
+        onClick={() => openLink(link.url)}
+        title={t("mail.openLink")}
+        className="min-w-0 flex-1 rounded-lg px-2 py-1.5 text-left hover:bg-neutral-100 dark:hover:bg-neutral-800"
+      >
+        <span className="flex items-baseline gap-2">
+          <span className="shrink-0 truncate text-sm font-medium text-blue-700 dark:text-blue-400">
+            {link.host}
+          </span>
+          {link.label && (
+            <span className="min-w-0 flex-1 truncate text-xs text-neutral-500">{link.label}</span>
+          )}
+        </span>
+        <span className="mt-0.5 block truncate text-xs text-neutral-400">{link.url}</span>
+      </button>
+      <button
+        onClick={() => void copy()}
+        title={copied ? t("mail.copied") : t("mail.copyLink")}
+        aria-label={copied ? t("mail.copied") : t("mail.copyLink")}
+        className="mt-1 shrink-0 rounded-lg p-1.5 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
+      >
+        {copied ? <Check size={13} /> : <Copy size={13} />}
+      </button>
+    </li>
+  );
+}
+
+/**
+ * The links a message offered, as a list rather than as clickable body text.
+ *
+ * This is the whole point of the feature and the reason it is safe. The body
+ * still renders as inert plain text; what changes is that `htmlToText` no
+ * longer *destroys* the hrefs it flattens — an `<a href="…/verify?token=…">Verify
+ * your email</a> used to become three words with no way back to the address,
+ * which made HTML-only sign-in mail unusable rather than merely plain.
+ *
+ * Numbers line up with the `[n]` markers left in the body, so "Verify" can be
+ * told from the footer's "Privacy policy" in a message carrying forty of them.
+ * Rows past the last marker had no anchor to mark: bare URLs spelled out in the
+ * text, and links that lived only in an alternative part the body didn't
+ * come from.
+ */
+function MessageLinks({ links }: { links: MailLink[] }) {
+  const { t } = useTranslation();
+  const [collapsed, setCollapsed] = useState(links.length > LINKS_SHOWN_UNCOLLAPSED);
+  if (links.length === 0) return null;
+
+  return (
+    <section className="mt-6 rounded-xl border border-neutral-200 p-2 dark:border-neutral-700">
+      <button
+        onClick={() => setCollapsed(!collapsed)}
+        aria-expanded={!collapsed}
+        className="flex w-full items-center gap-2 rounded-lg px-2 py-1 text-left text-sm font-medium hover:bg-neutral-50 dark:hover:bg-neutral-800"
+      >
+        <Link2 size={14} className="shrink-0 text-neutral-400" />
+        <span className="flex-1">{t("mail.links", { count: links.length })}</span>
+        <ChevronDown
+          size={15}
+          className={`shrink-0 text-neutral-400 transition-transform ${collapsed ? "" : "rotate-180"}`}
+        />
+      </button>
+      {!collapsed && (
+        <>
+          <ul className="mt-1 space-y-0.5">
+            {links.map((link, i) => <LinkRow key={link.url} link={link} index={i + 1} />)}
+          </ul>
+          <p className="mt-2 px-2 pb-1 text-xs text-neutral-400">{t("mail.linksNote")}</p>
+        </>
+      )}
+    </section>
+  );
+}
+
+/**
+ * The message text, with the thread underneath it folded away.
+ *
+ * PLAIN TEXT, deliberately. `mime.ts` has already flattened any HTML part, and
+ * what lands here is never fed to a markdown renderer or
+ * `dangerouslySetInnerHTML`: a message body is arbitrary markup written by a
+ * stranger, and this webview holds the user's session. The body's own text is
+ * not made clickable either — links are offered separately, with their real
+ * destination shown, which is the difference between reading a link and being
+ * invited to trust one.
+ *
+ * The split is DISPLAY only: `detail.body` still holds the whole message, so
+ * search reaches the trail and the assistant still has the earlier context.
+ */
+function MessageBody({ body }: { body: string }) {
+  const { t } = useTranslation();
+  const [showQuoted, setShowQuoted] = useState(false);
+  const { visible, quoted } = useMemo(() => splitQuoted(body), [body]);
+
+  return (
+    <>
+      <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">
+        {visible || t("mail.noBody")}
+      </p>
+      {quoted && (
+        <>
+          <button
+            onClick={() => setShowQuoted(!showQuoted)}
+            aria-expanded={showQuoted}
+            className="mt-3 rounded-lg bg-neutral-100 px-2 py-1 text-xs text-neutral-500 hover:bg-neutral-200 dark:bg-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-700"
+          >
+            {showQuoted ? t("mail.hideQuoted") : t("mail.showQuoted")}
+          </button>
+          {showQuoted && (
+            <p className="mt-2 whitespace-pre-wrap break-words border-l-2 border-neutral-200 pl-3 text-sm leading-relaxed text-neutral-500 dark:border-neutral-700">
+              {quoted}
+            </p>
+          )}
+        </>
+      )}
+    </>
   );
 }
 
@@ -745,18 +923,17 @@ export default function MailView({ target }: { target?: MailMessageSummary }) {
                     {downloadError}
                   </p>
                 )}
-                {/* PLAIN TEXT, deliberately. `mime.ts` has already converted any
-                    HTML part, and what lands here is never fed to a markdown
-                    renderer or `dangerouslySetInnerHTML`: a message body is
-                    arbitrary markup written by a stranger, and this webview
-                    holds the user's session. Links are not made clickable for
-                    the same reason — a mail link is the phishing surface. */}
-                <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">
-                  {detail.body || t("mail.noBody")}
-                </p>
+                {/* Keyed on the message so the quoted-text and link toggles
+                    start closed on every message, rather than carrying the last
+                    one's state across. */}
+                <MessageBody key={`body|${detail.mailbox}|${detail.uid}`} body={detail.body} />
                 {detail.body_truncated && (
                   <p className="mt-4 text-xs text-neutral-400">{t("mail.truncated")}</p>
                 )}
+                {/* Below the body, because it is a reading aid for it — and
+                    still listed when the body was cut, since the links were
+                    harvested from the full text before the cap. */}
+                <MessageLinks key={`links|${detail.mailbox}|${detail.uid}`} links={detail.links} />
                 {detail.attachments.length > 0 && (
                   <p className="mt-4 text-xs text-neutral-400">{t("mail.attachmentsHint")}</p>
                 )}

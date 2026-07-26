@@ -22,7 +22,7 @@ function message(uid: number, subject: string): MailMessageDetail {
   return {
     uid, mailbox: "INBOX", subject, from: [], to: [], cc: [], reply_to: [],
     message_id: null, date: null, seen: false, flagged: false, size: null,
-    body: "", body_truncated: false, attachments: [],
+    body: "", body_truncated: false, links: [], attachments: [],
   };
 }
 

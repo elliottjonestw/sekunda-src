@@ -579,7 +579,14 @@
     "showingAll_other": "{{count}} 封郵件。",
     "loadOlder": "載入較舊的郵件",
     "showingOf": "顯示 {{count}} 封，共 {{total}} 封。",
-    "showingCapped": "顯示 {{count}} 封。此信箱有 {{total}} 封符合的郵件，超過這裡可翻閱的數量。"
+    "showingCapped": "顯示 {{count}} 封。此信箱有 {{total}} 封符合的郵件，超過這裡可翻閱的數量。",
+    "links_other": "此郵件中有 {{count}} 個連結",
+    "linksNote": "連結會在瀏覽器中開啟。登入任何網站前請先確認網址。",
+    "openLink": "在瀏覽器中開啟",
+    "copyLink": "複製網址",
+    "copied": "已複製",
+    "showQuoted": "顯示引用內容",
+    "hideQuoted": "隱藏引用內容"
   },
   "assistant": {
     "title": "AI 助理",
